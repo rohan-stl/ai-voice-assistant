@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Shopping Assistant</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            padding-top: 80px;
+        }
+
+        .assistant {
+            width: 450px;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        button {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            border: none;
+            background: #111;
+            color: white;
+            font-size: 40px;
+            cursor: pointer;
+            margin: 20px;
+        }
+
+        button.recording {
+            background: #d32f2f;
+        }
+
+        #status {
+            margin: 15px 0;
+            color: #666;
+        }
+
+        #transcription,
+        #answer {
+            text-align: left;
+            margin-top: 20px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="assistant">
+
+    <h1>AI Shopping Assistant</h1>
+
+    <p>Ask me about our products.</p>
+
+    <button id="recordButton">🎤</button>
+
+    <div id="status">
+        Click the microphone to start
+    </div>
+
+    <div id="transcription">
+        <strong>You:</strong>
+        <div id="userText"></div>
+    </div>
+
+    <div id="answer">
+        <strong>AI:</strong>
+        <div id="aiText"></div>
+    </div>
+
+</div>
+
+<script>
+
+let mediaRecorder;
+let audioChunks = [];
+
+const recordButton = document.getElementById("recordButton");
+const status = document.getElementById("status");
+const userText = document.getElementById("userText");
+const aiText = document.getElementById("aiText");
+
+recordButton.addEventListener("click", async () => {
+
+    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+
+        try {
+
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true
+            });
+
+            mediaRecorder = new MediaRecorder(stream);
+
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+
+                status.textContent = "Processing...";
+
+                const audioBlob = new Blob(
+                    audioChunks,
+                    { type: "audio/webm" }
+                );
+
+                const formData = new FormData();
+
+                formData.append(
+                    "file",
+                    audioBlob,
+                    "recording.webm"
+                );
+
+                try {
+
+                    const response = await fetch(
+                        "http://localhost:8001/voice",
+                        {
+                            method: "POST",
+                            body: formData
+                        }
+                    );
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error: ${response.status}`);
+                    }
+
+                    const audioBlob = await response.blob();
+
+                    const audioUrl = URL.createObjectURL(audioBlob);
+
+                    const audio = new Audio(audioUrl);
+
+                    await audio.play();
+
+                    audio.onended = () => {
+                        URL.revokeObjectURL(audioUrl);
+                    };
+
+                    status.textContent =
+                        "Done. Click the microphone to speak again.";
+
+                    console.log("Response:", data);
+
+                    userText.textContent =
+                        data.transcription || "";
+
+                    aiText.textContent =
+                        data.answer || "";
+
+                    if (data.audio_url) {
+
+                        const audio =
+                            new Audio(data.audio_url);
+
+                        await audio.play();
+                    }
+
+                    status.textContent =
+                        "Click the microphone to speak again.";
+
+                } catch (error) {
+
+                    console.error(error);
+
+                    status.textContent =
+                        "Something went wrong.";
+
+                }
+
+            };
+
+            mediaRecorder.start();
+
+            recordButton.classList.add("recording");
+
+            recordButton.textContent = "⏹";
+
+            status.textContent =
+                "Listening... Click again to stop.";
+
+        } catch (error) {
+
+            console.error(error);
+
+            status.textContent =
+                "Microphone permission was denied.";
+
+        }
+
+    } else {
+
+        mediaRecorder.stop();
+
+        mediaRecorder.stream
+            .getTracks()
+            .forEach(track => track.stop());
+
+        recordButton.classList.remove("recording");
+
+        recordButton.textContent = "🎤";
+    }
+
+});
+
+</script>
+
+</body>
+</html>
