@@ -77,13 +77,10 @@ def voice(file: UploadFile = File(...)):
     output_file_path = tempfile.mktemp(suffix=".mp3")
 
     try:
-        # 1. Speech → Text
         transcription = speech_to_text(temp_file_path)
 
-        # 2. Get Shopify products
         products = get_products()
 
-        # 3. Text → LLM → Answer
         answer = ask_llm(
             transcription,
             products
