@@ -1,0 +1,268 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+
+*.egg-info/
+.installed.cfg
+MANIFEST
+
+# ============================================================
+# Virtual Environments
+# ============================================================
+
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================================
+# Environment Variables / Secrets
+# ============================================================
+
+.env
+.env.*
+!.env.example
+!.env.template
+
+# API keys / credentials
+*.pem
+*.key
+*.crt
+credentials.json
+service-account.json
+secrets.json
+
+# ============================================================
+# FastAPI / Application Generated Files
+# ============================================================
+
+*.log
+logs/
+tmp/
+temp/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============================================================
+# PostgreSQL / Database Files
+# ============================================================
+
+*.sql
+*.sql.gz
+*.dump
+*.backup
+*.bak
+
+# Local database directories
+postgres_data/
+postgresql_data/
+pgdata/
+
+# SQLite, if used for local testing
+*.sqlite
+*.sqlite3
+*.db
+
+# ============================================================
+# AI / ML / LLM Models
+# ============================================================
+
+# Model files
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+*.ggml
+*.tflite
+*.pb
+*.h5
+*.keras
+*.joblib
+*.pkl
+*.pickle
+
+# Hugging Face / Transformers
+huggingface/
+huggingface_cache/
+transformers_cache/
+hf_cache/
+.cache/huggingface/
+.cache/torch/
+.cache/transformers/
+
+# Generic model directories
+models/
+model/
+model_cache/
+model_cache/
+checkpoints/
+weights/
+pretrained_models/
+
+# Ollama
+.ollama/
+ollama/
+ollama_models/
+models/ollama/
+
+# Whisper / ASR models
+whisper_models/
+faster_whisper/
+whisper_cache/
+
+# TTS models
+tts_models/
+xtts_models/
+f5_tts/
+voice_models/
+
+# Embeddings / Vector databases
+embeddings/
+embedding_cache/
+vector_db/
+vectorstore/
+chroma/
+chroma_db/
+faiss_index/
+faiss_indexes/
+
+# AI generated/generated processing data
+ai_cache/
+llm_cache/
+inference_cache/
+generated_audio/
+generated_video/
+generated_images/
+
+# ============================================================
+# Media / Large Files
+# ============================================================
+
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# Uploaded/generated media
+uploads/
+media/
+output/
+outputs/
+processed/
+processing/
+
+# ============================================================
+# Jupyter
+# ============================================================
+
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================================
+# PyCharm / JetBrains
+# ============================================================
+
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ============================================================
+# VS Code
+# ============================================================
+
+.vscode/
+
+# ============================================================
+# OS Generated Files
+# ============================================================
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# Docker
+# ============================================================
+
+docker-compose.override.yml
+
+# ============================================================
+# Coverage / Testing
+# ============================================================
+
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+coverage.xml
+*.cover
+*.py,cover
+
+# ============================================================
+# Node / Frontend (if added later)
+# ============================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ============================================================
+# Temporary / Backup Files
+# ============================================================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.orig
+*.bak
