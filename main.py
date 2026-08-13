@@ -41,7 +41,6 @@ def root():
         "service": "AI Shopping Assistant"
     }
 
-
 @app.get("/products")
 def products():
     return {
