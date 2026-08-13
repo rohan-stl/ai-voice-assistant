@@ -26,6 +26,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:3001",
+        "https://bhavin-ai-shopping-assistant-demo.myshopify.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -104,16 +105,8 @@ def voice(file: UploadFile = File(...)):
     finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-from shopify_service import get_products
-from llm_service import ask_llm
-from voice_service import speech_to_text, text_to_speech
-from fastapi.responses import FileResponse
-
-class AskRequest(BaseModel):
-    message: str
 
 
-app = FastAPI(title="AI Shopping Assistant")
 
 
 @app.get("/")
