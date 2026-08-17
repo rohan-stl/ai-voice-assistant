@@ -83,4 +83,33 @@ Important rules:
         ]
     )
 
-    return response.choices[0].message.content
+    answer = response.choices[0].message.content
+
+    # Logging and JSON response output
+    import json
+    from datetime import datetime
+
+    timestamp = datetime.now().isoformat()
+    filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_data = {
+        "timestamp": timestamp,
+        "input_message": message,
+        "llm_response": answer
+    }
+
+    log_filename = os.path.join(log_dir, f"llm_response_{filename_timestamp}.json")
+    with open(log_filename, "w", encoding="utf-8") as f:
+        json.dump(log_data, f, indent=4, ensure_ascii=False)
+
+    print("\n" + "="*50)
+    print(f"[{timestamp}] LLM RESPONSE LOG")
+    print(f"Input: {message}")
+    print(f"Response: {answer}")
+    print(f"Saved to file: {log_filename}")
+    print("="*50 + "\n")
+
+    return answer
