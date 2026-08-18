@@ -24,54 +24,86 @@ def filter_products(products: list, filters: dict) -> list:
             if vendor.lower() not in actual_vendor.lower():
                 continue
 
-        # Variant-level filtering
         variants = product.get("variants", {}).get("nodes", [])
 
         matching_variants = []
 
         for variant in variants:
 
-            selected_options = variant.get("selectedOptions", [])
+            variant_title = variant.get("title", "")
 
-            options = {
-                option.get("name", "").lower(): option.get("value", "")
-                for option in selected_options
-            }
+            # -----------------------------------------
+            # Extract color and size from variant title
+            # Example: "White / M"
+            # -----------------------------------------
 
+            variant_parts = [
+                part.strip()
+                for part in variant_title.split("/")
+            ]
+
+            variant_color = (
+                variant_parts[0]
+                if len(variant_parts) >= 1
+                else ""
+            )
+
+            variant_size = (
+                variant_parts[1]
+                if len(variant_parts) >= 2
+                else ""
+            )
+
+            # -----------------------------------------
             # Color filter
+            # -----------------------------------------
+
             if color:
-                actual_color = options.get("color", "")
-
-                if actual_color.lower() != color.lower():
+                if variant_color.lower() != color.lower():
                     continue
 
+            # -----------------------------------------
             # Size filter
-            if size:
-                actual_size = options.get("size", "")
+            # -----------------------------------------
 
-                if actual_size.lower() != size.lower():
+            if size:
+                if variant_size.lower() != size.lower():
                     continue
 
+            # -----------------------------------------
             # Price filter
+            # -----------------------------------------
+
             price = variant.get("price")
 
-            if price is not None:
+            if max_price is not None or min_price is not None:
+
+                if price is None:
+                    continue
 
                 try:
                     price = float(price)
                 except (ValueError, TypeError):
                     continue
 
-                if max_price is not None and price > float(max_price):
+                if (
+                    max_price is not None
+                    and price > float(max_price)
+                ):
                     continue
 
-                if min_price is not None and price < float(min_price):
+                if (
+                    min_price is not None
+                    and price < float(min_price)
+                ):
                     continue
 
             matching_variants.append(variant)
 
-        # If variant-level filters exist but no variants match,
-        # skip the product
+        # -----------------------------------------
+        # If variant filters exist but nothing matched
+        # -----------------------------------------
+
         if (
             color
             or size
@@ -81,8 +113,10 @@ def filter_products(products: list, filters: dict) -> list:
             if not matching_variants:
                 continue
 
-        # Keep product but replace variants
-        # with only matching variants
+        # -----------------------------------------
+        # Keep only matching variants
+        # -----------------------------------------
+
         product_copy = product.copy()
 
         if matching_variants:

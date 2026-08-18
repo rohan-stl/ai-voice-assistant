@@ -10,13 +10,13 @@ from voice_service import speech_to_text, text_to_speech
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from product_filter import filter_products
+from storefront_url import build_storefront_url
 
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.responses import FileResponse
 
 class AskRequest(BaseModel):
     message: str
-
 
 app = FastAPI(title="AI Shopping Assistant")
 
@@ -32,7 +32,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 def root():
     return {
@@ -40,13 +39,11 @@ def root():
         "service": "AI Shopping Assistant"
     }
 
-
 @app.get("/products")
 def products():
     return {
         "products": get_products()
     }
-
 
 @app.post("/ask")
 def ask(request: AskRequest):
@@ -73,7 +70,6 @@ def ask(request: AskRequest):
         "filters": filters,
         "products": filtered_products
     }
-
 
 @app.post("/voice")
 def voice(
@@ -106,8 +102,15 @@ def voice(
 
         # 2. Get Shopify products
         products = get_products()
-        print("Total Shopify products:", len(products))
-        print("Shopify products:", products)
+        for product in products:
+            print(
+                product["title"],
+                [
+                    v.get("title")
+                    for v in product.get("variants", {}).get("nodes", [])
+                ]
+            )
+
         # 3. LLM
         result = ask_llm(
             transcription,
@@ -145,7 +148,7 @@ def voice(
 
         filters = result.get("filters", {})
 
-        filtered_products = products
+        storefront_url = build_storefront_url(filters)
 
         if result.get("intent") == "filter_products":
             filtered_products = filter_products(
@@ -160,7 +163,7 @@ def voice(
             "answer": answer,
             "intent": result.get("intent", "general_question"),
             "filters": result.get("filters", {}),
-            "products": filtered_products,
+            "storefront_url": storefront_url,
             "audio": audio_base64
         }
 
@@ -173,13 +176,19 @@ def voice(
 
         raise
 
-
 @app.post("/voice-text")
 def voice_text(request: AskRequest):
     print("Text input:", request.message)
 
     # 1. Get Shopify products
+    print("Text input:", request.message)
+
+    print("Fetching Shopify products...")
     products = get_products()
+
+    print("Shopify products fetched:", len(products))
+
+    print("Calling LLM...")
 
     # 2. LLM
     result = ask_llm(
@@ -194,9 +203,11 @@ def voice_text(request: AskRequest):
 
     # 4. Filter products
     filters = result.get("filters", {})
+    print("LLM result:", result)
 
-    filtered_products = products
-
+    print("Building storefront URL...")
+    storefront_url = build_storefront_url(filters)
+    print("Storefront URL:", storefront_url)
     if result.get("intent") == "filter_products":
         filtered_products = filter_products(
             products,
@@ -237,7 +248,7 @@ def voice_text(request: AskRequest):
                 "general_question"
             ),
             "filters": filters,
-            "products": filtered_products,
+            "storefront_url": storefront_url,
             "audio": audio_base64
         }
 
