@@ -1,4 +1,5 @@
 import os
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -9,7 +10,11 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
-def ask_llm(message: str, products: list) -> str:
+
+def ask_llm(message: str, products: list) -> dict:
+    print("[LLM] Request received")
+    print("[LLM] Customer message:", message)
+    print("[LLM] Product count:", len(products))
 
     product_text = []
 
@@ -43,7 +48,7 @@ Variants:
     product_text = "\n".join(product_text)
 
     prompt = f"""
-You are an AI shopping assistant.
+You are an AI shopping assistant for a Shopify store.
 
 Customer request:
 {message}
@@ -51,26 +56,145 @@ Customer request:
 Available products:
 {product_text}
 
-Your job is to recommend the most relevant products based ONLY on the
-information provided above.
+Your job is to determine whether the customer is asking to:
+- filter/find products,
+- open a specific product,
+- open a specific collection/category, or
+- ask for clarification about a shopping request.
 
-Consider:
-- Customer's requirements
-- Product type
-- Product description
-- Price
-- Availability
-- Variants
-- Inventory
+You are not a general-purpose assistant.
+Do not answer unrelated factual questions.
+If the utterance is off-topic, unclear, or likely a speech-to-text mistake,
+ask the user to clarify what product or collection they want.
 
-Important rules:
-- Do not invent product information.
-- Do not claim a product is available if availableForSale is false.
-- If the customer specifies a maximum price, do not recommend products
-  above that price unless you clearly explain that no matching product
-  was found.
-- If no suitable product exists, clearly tell the customer.
-- Keep the response concise and conversational.
+Return ONLY valid JSON.
+
+The JSON must have exactly this structure:
+
+{{
+  "intent": "filter_products" or "product_request" or "collection_request" or "clarification_needed",
+  "navigation_target": {{
+    "type": "product" or "collection" or null,
+    "query": "the product or collection name from the user" or null
+  }},
+  "filters": {{
+    "product_type": null,
+    "color": null,
+    "size": null,
+    "vendor": null,
+    "max_price": null,
+    "min_price": null
+  }},
+  "answer": "short conversational response"
+}}
+
+Rules:
+
+1. If the customer is looking for products by attributes, use:
+   "intent": "filter_products"
+
+2. If the customer wants a specific product, use:
+   "intent": "product_request"
+   and set navigation_target.type to "product"
+
+3. If the customer wants a collection/category, use:
+   "intent": "collection_request"
+   and set navigation_target.type to "collection"
+
+4. If a filter was not specified, set it to null.
+
+5. Do NOT invent filters or navigation targets.
+
+6. If the customer says:
+   "Show me blue T-shirts"
+
+   return approximately:
+
+   {{
+     "intent": "filter_products",
+     "navigation_target": {{
+       "type": null,
+       "query": null
+     }},
+     "filters": {{
+       "product_type": "T-shirt",
+       "color": "blue",
+       "vendor": null,
+       "max_price": null,
+       "min_price": null
+     }},
+     "answer": "Here are the blue T-shirts I found."
+   }}
+
+7. If the customer says:
+   "Show me Nike blue T-shirts under $40"
+
+   return approximately:
+
+   {{
+     "intent": "filter_products",
+     "navigation_target": {{
+       "type": null,
+       "query": null
+     }},
+     "filters": {{
+       "product_type": "T-shirt",
+       "color": "blue",
+       "vendor": "Nike",
+       "max_price": 40,
+       "min_price": null
+     }},
+     "answer": "Here are the Nike blue T-shirts under $40."
+   }}
+
+8. If the customer says:
+   "Show me the available t-shirts"
+
+   return approximately:
+
+   {{
+     "intent": "collection_request",
+     "navigation_target": {{
+       "type": "collection",
+       "query": "t-shirts"
+     }},
+     "filters": {{
+       "product_type": "T-shirt",
+       "color": null,
+       "size": null,
+       "vendor": null,
+       "max_price": null,
+       "min_price": null
+     }},
+     "answer": "Here are the T-shirts I found."
+   }}
+
+9. If the customer says something unrelated to shopping,
+   such as an academic, news, or general knowledge question,
+   return:
+
+   {{
+     "intent": "clarification_needed",
+     "navigation_target": {{
+       "type": null,
+       "query": null
+     }},
+     "filters": {{
+       "product_type": null,
+       "color": null,
+       "size": null,
+       "vendor": null,
+       "max_price": null,
+       "min_price": null
+     }},
+     "answer": "I can help with products in this store. If you meant a product, collection, color, size, or price, please say that again."
+   }}
+
+10. Do not invent product information.
+
+11. Keep the answer concise and conversational.
+
+12. Return ONLY JSON. Do not use markdown code fences.
 """
 
     response = client.chat.completions.create(
@@ -83,33 +207,92 @@ Important rules:
         ]
     )
 
-    answer = response.choices[0].message.content
+    print("[LLM] Response object received")
 
-    # Logging and JSON response output
-    import json
-    from datetime import datetime
+    if not response.choices:
+        print("[LLM] No choices returned")
+        return {
+            "intent": "clarification_needed",
+            "navigation_target": {
+                "type": None,
+                "query": None
+            },
+            "filters": {
+                "product_type": None,
+                "color": None,
+                "size": None,
+                "vendor": None,
+                "max_price": None,
+                "min_price": None
+            },
+            "answer": "I can help with products in this store. Please tell me what item, collection, color, size, or price you want."
+        }
 
-    timestamp = datetime.now().isoformat()
-    filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    content = response.choices[0].message.content
 
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
+    print("[LLM] Raw content:", content)
 
-    log_data = {
-        "timestamp": timestamp,
-        "input_message": message,
-        "llm_response": answer
-    }
+    if not content:
+        print("[LLM] Empty content returned")
+        return {
+            "intent": "clarification_needed",
+            "navigation_target": {
+                "type": None,
+                "query": None
+            },
+            "filters": {
+                "product_type": None,
+                "color": None,
+                "size": None,
+                "vendor": None,
+                "max_price": None,
+                "min_price": None
+            },
+            "answer": "I can help with products in this store. Please tell me what item, collection, color, size, or price you want."
+        }
 
-    log_filename = os.path.join(log_dir, f"llm_response_{filename_timestamp}.json")
-    with open(log_filename, "w", encoding="utf-8") as f:
-        json.dump(log_data, f, indent=4, ensure_ascii=False)
+    content = content.strip()
 
-    print("\n" + "="*50)
-    print(f"[{timestamp}] LLM RESPONSE LOG")
-    print(f"Input: {message}")
-    print(f"Response: {answer}")
-    print(f"Saved to file: {log_filename}")
-    print("="*50 + "\n")
+    try:
+        parsed = json.loads(content)
+        print("[LLM] Parsed JSON:", parsed)
 
-    return answer
+        if "navigation_target" not in parsed:
+            parsed["navigation_target"] = {
+                "type": None,
+                "query": None
+            }
+
+        if parsed.get("intent") == "general_question":
+            parsed["intent"] = "clarification_needed"
+            parsed["answer"] = (
+                "I can help with products in this store. "
+                "If you meant a product, collection, color, size, or price, "
+                "please say that again."
+            )
+
+        return parsed
+
+    except json.JSONDecodeError:
+        print("[LLM] Failed to parse JSON, using fallback")
+        # Fallback if the model doesn't return valid JSON
+        return {
+            "intent": "clarification_needed",
+            "navigation_target": {
+                "type": None,
+                "query": None
+            },
+            "filters": {
+                "product_type": None,
+                "color": None,
+                "size": None,
+                "vendor": None,
+                "max_price": None,
+                "min_price": None
+            },
+            "answer": (
+                "I can help with products in this store. "
+                "If you meant a product, collection, color, size, or price, "
+                "please say that again."
+            )
+        }

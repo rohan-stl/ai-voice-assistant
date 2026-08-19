@@ -71,6 +71,51 @@ def get_products(first=20):
     return data["data"]["products"]["nodes"]
 
 
+def get_collections(first=50):
+    token = get_access_token()
+
+    url = f"https://{STORE_DOMAIN}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+
+    query = """
+    query GetCollections($first: Int!) {
+        collections(first: $first) {
+            nodes {
+                id
+                title
+                handle
+            }
+        }
+    }
+    """
+
+    variables = {
+        "first": first
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
+    }
+
+    response = requests.post(
+        url,
+        json={
+            "query": query,
+            "variables": variables
+        },
+        headers=headers,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if "errors" in data:
+        raise Exception(data["errors"])
+
+    return data["data"]["collections"]["nodes"]
+
+
 if __name__ == "__main__":
     products = get_products()
 
