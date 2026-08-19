@@ -150,6 +150,8 @@ def voice(
 
         storefront_url = build_storefront_url(filters)
 
+        filtered_products = products
+
         if result.get("intent") == "filter_products":
             filtered_products = filter_products(
                 products,
@@ -164,6 +166,7 @@ def voice(
             "intent": result.get("intent", "general_question"),
             "filters": result.get("filters", {}),
             "storefront_url": storefront_url,
+            "products": filtered_products,
             "audio": audio_base64
         }
 
@@ -208,6 +211,9 @@ def voice_text(request: AskRequest):
     print("Building storefront URL...")
     storefront_url = build_storefront_url(filters)
     print("Storefront URL:", storefront_url)
+
+    filtered_products = products
+
     if result.get("intent") == "filter_products":
         filtered_products = filter_products(
             products,
@@ -249,6 +255,7 @@ def voice_text(request: AskRequest):
             ),
             "filters": filters,
             "storefront_url": storefront_url,
+            "products": filtered_products,
             "audio": audio_base64
         }
 

@@ -41,7 +41,7 @@ def build_storefront_url(filters: dict) -> str:
         params["filter.v.price.lte"] = max_price
 
     if not params:
-        return f"{SHOPIFY_STORE_URL}/collections/all"
+        return None
 
     # Keep the collection sorted consistently
     params["sort_by"] = "title-ascending"
