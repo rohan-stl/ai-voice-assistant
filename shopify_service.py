@@ -36,6 +36,11 @@ def get_products(first=20):
                         price
                         availableForSale
                         inventoryQuantity
+
+                        image {
+                            url
+                            altText
+                        }
                     }
                 }
             }

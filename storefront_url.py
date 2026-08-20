@@ -4,31 +4,51 @@ from urllib.parse import urlencode
 SHOPIFY_STORE_URL = "https://bhavin-ai-shopping-assistant-demo.myshopify.com"
 
 
+def _as_list(value):
+    """
+    Normalize a filter value into a list of trimmed strings.
+
+    Accepts None, a single string (possibly comma-separated, e.g.
+    "white, blue"), or an already-iterable value like a list.
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    return [
+        part.strip()
+        for part in str(value).split(",")
+        if part.strip()
+    ]
+
+
 def build_storefront_url(filters: dict) -> str:
     params = {}
 
-    product_type = filters.get("product_type")
-    color = filters.get("color")
-    size = filters.get("size")
-    vendor = filters.get("vendor")
+    product_types = _as_list(filters.get("product_type"))
+    colors = _as_list(filters.get("color"))
+    sizes = _as_list(filters.get("size"))
+    vendors = _as_list(filters.get("vendor"))
     max_price = filters.get("max_price")
     min_price = filters.get("min_price")
 
-    # Product type
-    if product_type:
-        params["filter.p.product_type"] = product_type
+    # Product type (Shopify supports repeated params for OR-filtering)
+    if product_types:
+        params["filter.p.product_type"] = product_types
 
     # Color
-    if color:
-        params["filter.v.option.color"] = color.title()
+    if colors:
+        params["filter.v.option.color"] = [c.title() for c in colors]
 
     # Size
-    if size:
-        params["filter.v.option.size"] = size.upper()
+    if sizes:
+        params["filter.v.option.size"] = [s.upper() for s in sizes]
 
     # Vendor
-    if vendor:
-        params["filter.p.vendor"] = vendor
+    if vendors:
+        params["filter.p.vendor"] = vendors
 
     # Price
     if min_price is not None:
@@ -48,5 +68,5 @@ def build_storefront_url(filters: dict) -> str:
 
     return (
         f"{SHOPIFY_STORE_URL}/collections/all?"
-        f"{urlencode(params)}"
+        f"{urlencode(params, doseq=True)}"
     )

@@ -1,6 +1,7 @@
 import os
 import json
-from openai import OpenAI
+import time
+from openai import OpenAI, RateLimitError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,6 +10,107 @@ client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1"
 )
+
+MODEL_NAME = "openai/gpt-oss-20b:free"
+
+MAX_RETRIES = 3
+
+# Cap how long any single retry wait can be, even if the provider
+# reports a much larger retry_after_seconds value.
+MAX_RETRY_WAIT_SECONDS = 30
+
+FALLBACK_RESPONSE = {
+    "intent": "general_question",
+    "filters": {
+        "product_type": None,
+        "color": None,
+        "size": None,
+        "vendor": None,
+        "max_price": None,
+        "min_price": None
+    },
+    "answer": "I didn't understand that. Please try again."
+}
+
+RATE_LIMITED_RESPONSE = {
+    "intent": "general_question",
+    "filters": {
+        "product_type": None,
+        "color": None,
+        "size": None,
+        "vendor": None,
+        "max_price": None,
+        "min_price": None
+    },
+    "answer": (
+        "I'm getting a lot of requests right now — "
+        "please try again in a few seconds."
+    )
+}
+
+
+def _extract_retry_after_seconds(error: RateLimitError):
+    """
+    Pull the provider-suggested retry_after_seconds out of the error
+    body if present (OpenRouter includes this in error.metadata).
+    Returns None if it can't be found.
+    """
+    try:
+        body = getattr(error, "body", None) or {}
+        metadata = body.get("error", {}).get("metadata", {})
+        retry_after = metadata.get("retry_after_seconds")
+
+        if retry_after is not None:
+            return float(retry_after)
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _call_llm_with_retry(prompt: str):
+    """
+    Calls the LLM, retrying on RateLimitError with the provider's
+    suggested wait time (falling back to simple exponential backoff
+    if none is given). Re-raises the last error if all retries fail.
+    """
+    last_error = None
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            return client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+        except RateLimitError as error:
+            last_error = error
+
+            wait_seconds = _extract_retry_after_seconds(error)
+
+            if wait_seconds is None:
+                # No hint from the provider — simple exponential backoff
+                wait_seconds = 2 ** attempt
+
+            wait_seconds = min(wait_seconds, MAX_RETRY_WAIT_SECONDS)
+
+            is_last_attempt = attempt == MAX_RETRIES - 1
+
+            print(
+                f"LLM rate-limited (attempt {attempt + 1}/{MAX_RETRIES}). "
+                f"{'Giving up.' if is_last_attempt else f'Retrying in {wait_seconds}s...'}"
+            )
+
+            if not is_last_attempt:
+                time.sleep(wait_seconds)
+
+    raise last_error
 
 
 def ask_llm(message: str, products: list) -> dict:
@@ -92,6 +194,11 @@ Rules:
 
 5. Do NOT invent filters.
 
+5a. Always spell "product_type" for T-shirts exactly as "T-Shirt"
+    (capital T, capital S), matching how it appears in the product
+    catalog above. Use this exact casing consistently, never
+    "T-shirt" or "t-shirt".
+
 6. If the customer says:
    "Show me blue T-shirts"
 
@@ -100,7 +207,7 @@ Rules:
    {{
      "intent": "filter_products",
      "filters": {{
-       "product_type": "T-shirt",
+       "product_type": "T-Shirt",
        "color": "blue",
        "vendor": null,
        "max_price": null,
@@ -117,7 +224,7 @@ Rules:
    {{
      "intent": "filter_products",
      "filters": {{
-       "product_type": "T-shirt",
+       "product_type": "T-Shirt",
        "color": "blue",
        "vendor": "Nike",
        "max_price": 40,
@@ -169,45 +276,19 @@ If the customer says:
 11. Return ONLY JSON. Do not use markdown code fences.
 """
 
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-20b:free",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
+    try:
+        response = _call_llm_with_retry(prompt)
+
+    except RateLimitError:
+        return RATE_LIMITED_RESPONSE
 
     if not response.choices:
-        return {
-            "intent": "general_question",
-            "filters": {
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": "I didn't understand that. Please try again."
-        }
+        return FALLBACK_RESPONSE
 
     content = response.choices[0].message.content
 
     if not content:
-        return {
-            "intent": "general_question",
-            "filters": {
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": "I didn't understand that. Please try again."
-        }
+        return FALLBACK_RESPONSE
 
     content = content.strip()
 

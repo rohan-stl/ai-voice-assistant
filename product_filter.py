@@ -1,27 +1,98 @@
+def _as_list(value):
+    """
+    Normalize a filter value into a list of trimmed strings.
+
+    Accepts None, a single string (possibly comma-separated, e.g.
+    "white, blue"), or an already-iterable value like a list.
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    return [
+        part.strip()
+        for part in str(value).split(",")
+        if part.strip()
+    ]
+
+
+def normalize_filters(filters: dict, products: list) -> dict:
+    """
+    Resolve product_type / vendor values against the exact casing used
+    in the real Shopify data.
+
+    The LLM's extracted filters (e.g. "T-shirt" vs the store's actual
+    "T-Shirt") can drift in casing. Our own product_filter matching is
+    case-insensitive so it isn't affected, but Shopify's native
+    collection filter URLs (filter.p.product_type=...) are case-
+    sensitive strings, so a casing mismatch silently returns zero
+    results on the storefront even when we found correct matches.
+    This resolves each requested value to the real string from the
+    fetched product list before it's used to build that URL.
+    """
+    normalized = dict(filters)
+
+    def _resolve(requested_values, actual_values):
+        resolved = []
+        for requested in requested_values:
+            match = next(
+                (
+                    actual for actual in actual_values
+                    if requested.lower() in actual.lower()
+                ),
+                None,
+            )
+            resolved.append(match if match else requested)
+        return ", ".join(resolved)
+
+    requested_types = _as_list(filters.get("product_type"))
+    if requested_types:
+        actual_types = {p.get("productType", "") for p in products}
+        actual_types.discard("")
+        normalized["product_type"] = _resolve(requested_types, actual_types)
+
+    requested_vendors = _as_list(filters.get("vendor"))
+    if requested_vendors:
+        actual_vendors = {p.get("vendor", "") for p in products}
+        actual_vendors.discard("")
+        normalized["vendor"] = _resolve(requested_vendors, actual_vendors)
+
+    return normalized
+
+
 def filter_products(products: list, filters: dict) -> list:
     filtered = []
 
-    product_type = filters.get("product_type")
-    color = filters.get("color")
-    size = filters.get("size")
-    vendor = filters.get("vendor")
+    product_types = _as_list(filters.get("product_type"))
+    colors = _as_list(filters.get("color"))
+    sizes = _as_list(filters.get("size"))
+    vendors = _as_list(filters.get("vendor"))
     max_price = filters.get("max_price")
     min_price = filters.get("min_price")
 
+    colors_lower = [c.lower() for c in colors]
+    sizes_lower = [s.lower() for s in sizes]
+
     for product in products:
 
-        # Product type filter
-        if product_type:
-            actual_type = product.get("productType", "")
+        # Product type filter (matches if ANY requested type is a substring)
+        if product_types:
+            actual_type = product.get("productType", "").lower()
 
-            if product_type.lower() not in actual_type.lower():
+            if not any(
+                pt.lower() in actual_type for pt in product_types
+            ):
                 continue
 
-        # Vendor filter
-        if vendor:
-            actual_vendor = product.get("vendor", "")
+        # Vendor filter (matches if ANY requested vendor is a substring)
+        if vendors:
+            actual_vendor = product.get("vendor", "").lower()
 
-            if vendor.lower() not in actual_vendor.lower():
+            if not any(
+                v.lower() in actual_vendor for v in vendors
+            ):
                 continue
 
         variants = product.get("variants", {}).get("nodes", [])
@@ -55,19 +126,19 @@ def filter_products(products: list, filters: dict) -> list:
             )
 
             # -----------------------------------------
-            # Color filter
+            # Color filter (matches ANY requested color)
             # -----------------------------------------
 
-            if color:
-                if variant_color.lower() != color.lower():
+            if colors_lower:
+                if variant_color.lower() not in colors_lower:
                     continue
 
             # -----------------------------------------
-            # Size filter
+            # Size filter (matches ANY requested size)
             # -----------------------------------------
 
-            if size:
-                if variant_size.lower() != size.lower():
+            if sizes_lower:
+                if variant_size.lower() not in sizes_lower:
                     continue
 
             # -----------------------------------------
@@ -105,8 +176,8 @@ def filter_products(products: list, filters: dict) -> list:
         # -----------------------------------------
 
         if (
-            color
-            or size
+            colors
+            or sizes
             or max_price is not None
             or min_price is not None
         ):

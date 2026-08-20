@@ -9,7 +9,7 @@ from llm_service import ask_llm
 from voice_service import speech_to_text, text_to_speech
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from product_filter import filter_products
+from product_filter import filter_products, normalize_filters
 from storefront_url import build_storefront_url
 
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
@@ -148,7 +148,9 @@ def voice(
 
         filters = result.get("filters", {})
 
-        storefront_url = build_storefront_url(filters)
+        storefront_url = build_storefront_url(
+            normalize_filters(filters, products)
+        )
 
         filtered_products = products
 
@@ -209,7 +211,9 @@ def voice_text(request: AskRequest):
     print("LLM result:", result)
 
     print("Building storefront URL...")
-    storefront_url = build_storefront_url(filters)
+    storefront_url = build_storefront_url(
+        normalize_filters(filters, products)
+    )
     print("Storefront URL:", storefront_url)
 
     filtered_products = products
