@@ -1,7 +1,9 @@
 import os
+import json
 import tempfile
 import base64
-from fastapi import FastAPI, UploadFile, File
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 
 from shopify_service import get_products
@@ -9,7 +11,7 @@ from llm_service import ask_llm
 from voice_service import speech_to_text, text_to_speech
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from product_filter import filter_products, normalize_filters
+from product_filter import filter_products, normalize_filters, merge_filters
 from storefront_url import build_storefront_url
 
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
@@ -17,6 +19,7 @@ from fastapi.responses import FileResponse
 
 class AskRequest(BaseModel):
     message: str
+    previous_filters: Optional[dict] = None
 
 app = FastAPI(title="AI Shopping Assistant")
 
@@ -74,8 +77,16 @@ def ask(request: AskRequest):
 @app.post("/voice")
 def voice(
     file: UploadFile = File(...),
+    previous_filters: str = Form(None),
     background_tasks: BackgroundTasks = None
 ):
+    try:
+        parsed_previous_filters = (
+            json.loads(previous_filters) if previous_filters else None
+        )
+    except (json.JSONDecodeError, TypeError):
+        parsed_previous_filters = None
+
     suffix = os.path.splitext(file.filename or "")[1] or ".webm"
 
     with tempfile.NamedTemporaryFile(
@@ -148,6 +159,9 @@ def voice(
 
         filters = result.get("filters", {})
 
+        if result.get("intent") == "filter_products":
+            filters = merge_filters(filters, parsed_previous_filters)
+
         storefront_url = build_storefront_url(
             normalize_filters(filters, products)
         )
@@ -166,7 +180,7 @@ def voice(
             "transcription": transcription,
             "answer": answer,
             "intent": result.get("intent", "general_question"),
-            "filters": result.get("filters", {}),
+            "filters": filters,
             "storefront_url": storefront_url,
             "products": filtered_products,
             "audio": audio_base64
@@ -209,6 +223,9 @@ def voice_text(request: AskRequest):
     # 4. Filter products
     filters = result.get("filters", {})
     print("LLM result:", result)
+
+    if result.get("intent") == "filter_products":
+        filters = merge_filters(filters, request.previous_filters)
 
     print("Building storefront URL...")
     storefront_url = build_storefront_url(

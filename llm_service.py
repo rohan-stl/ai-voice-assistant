@@ -22,6 +22,7 @@ MAX_RETRY_WAIT_SECONDS = 30
 FALLBACK_RESPONSE = {
     "intent": "general_question",
     "filters": {
+        "product_name": None,
         "product_type": None,
         "color": None,
         "size": None,
@@ -35,6 +36,7 @@ FALLBACK_RESPONSE = {
 RATE_LIMITED_RESPONSE = {
     "intent": "general_question",
     "filters": {
+        "product_name": None,
         "product_type": None,
         "color": None,
         "size": None,
@@ -165,6 +167,7 @@ The JSON must have exactly this structure:
 {{
   "intent": "filter_products" or "general_question",
   "filters": {{
+    "product_name": null,
     "product_type": null,
     "color": null,
     "size": null,
@@ -183,6 +186,7 @@ Rules:
 2. Extract product filters from the customer's request.
 
 3. Possible filters include:
+   - product_name
    - product_type
    - color
    - size
@@ -199,6 +203,21 @@ Rules:
     catalog above. Use this exact casing consistently, never
     "T-shirt" or "t-shirt".
 
+5b. "product_name" vs "product_type" — these are different things:
+    - "product_type" is a general category (e.g. "Snowboard", "T-Shirt")
+      and should be used when the customer describes what KIND of thing
+      they want.
+    - "product_name" is one specific, named product taken from the
+      catalog above (e.g. "The Complete Snowboard", "Classic T-Shirt")
+      and should be used when the customer refers to a particular
+      product by name, even loosely (e.g. "the complete snowboard",
+      "the archived one", "that classic tee").
+    When the customer names a specific product, set "product_name" to
+    that product's exact title as it appears in the catalog above, and
+    leave "product_type" null unless the customer ALSO separately
+    mentions a general category. Never put a specific product's name
+    into "product_type".
+
 6. If the customer says:
    "Show me blue T-shirts"
 
@@ -207,6 +226,7 @@ Rules:
    {{
      "intent": "filter_products",
      "filters": {{
+       "product_name": null,
        "product_type": "T-Shirt",
        "color": "blue",
        "vendor": null,
@@ -224,6 +244,7 @@ Rules:
    {{
      "intent": "filter_products",
      "filters": {{
+       "product_name": null,
        "product_type": "T-Shirt",
        "color": "blue",
        "vendor": "Nike",
@@ -241,6 +262,7 @@ If the customer says:
    {{
      "intent": "filter_products",
      "filters": {{
+       "product_name": null,
        "product_type": "T-Shirt",
        "color": "blue",
        "size": "M",
@@ -251,6 +273,45 @@ If the customer says:
      "answer": "Here are the blue medium T-shirts I found."
    }}
 
+7a. If the customer says:
+   "Show me the complete snowboard"
+
+   and the catalog above contains a product titled "The Complete
+   Snowboard", return approximately:
+
+   {{
+     "intent": "filter_products",
+     "filters": {{
+       "product_name": "The Complete Snowboard",
+       "product_type": null,
+       "color": null,
+       "size": null,
+       "vendor": null,
+       "max_price": null,
+       "min_price": null
+     }},
+     "answer": "Here's the Complete Snowboard."
+   }}
+
+7b. If the customer says:
+   "Show me the complete snowboard under $700"
+
+   return approximately:
+
+   {{
+     "intent": "filter_products",
+     "filters": {{
+       "product_name": "The Complete Snowboard",
+       "product_type": null,
+       "color": null,
+       "size": null,
+       "vendor": null,
+       "max_price": 700,
+       "min_price": null
+     }},
+     "answer": "Here's the Complete Snowboard, if it's under $700."
+   }}
+
 8. If the customer asks:
    "What is the capital of India?"
 
@@ -259,6 +320,7 @@ If the customer says:
    {{
      "intent": "general_question",
      "filters": {{
+    "product_name": None,
     "product_type": None,
     "color": None,
     "size": None,
@@ -300,8 +362,10 @@ If the customer says:
         return {
             "intent": "general_question",
             "filters": {
+                "product_name": None,
                 "product_type": None,
                 "color": None,
+                "size": None,
                 "vendor": None,
                 "max_price": None,
                 "min_price": None

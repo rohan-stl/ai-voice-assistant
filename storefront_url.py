@@ -27,12 +27,25 @@ def _as_list(value):
 def build_storefront_url(filters: dict) -> str:
     params = {}
 
+    product_names = _as_list(filters.get("product_name"))
     product_types = _as_list(filters.get("product_type"))
     colors = _as_list(filters.get("color"))
     sizes = _as_list(filters.get("size"))
     vendors = _as_list(filters.get("vendor"))
     max_price = filters.get("max_price")
     min_price = filters.get("min_price")
+
+    # Shopify's native collection filters (filter.p.*) are facet-based —
+    # there is no "product name" facet, so a title can't be expressed as
+    # a filter.p.* param the way product_type/vendor can. Free-text
+    # product-name matching only works through the storefront search
+    # endpoint's `q` param, so route there instead of /collections/all
+    # whenever a product_name is present.
+    use_search_endpoint = bool(product_names)
+
+    if product_names:
+        params["q"] = " ".join(product_names)
+        params["type"] = "product"
 
     # Product type (Shopify supports repeated params for OR-filtering)
     if product_types:
@@ -63,10 +76,12 @@ def build_storefront_url(filters: dict) -> str:
     if not params:
         return None
 
-    # Keep the collection sorted consistently
+    # Keep results sorted consistently
     params["sort_by"] = "title-ascending"
 
+    base_path = "/search" if use_search_endpoint else "/collections/all"
+
     return (
-        f"{SHOPIFY_STORE_URL}/collections/all?"
+        f"{SHOPIFY_STORE_URL}{base_path}?"
         f"{urlencode(params, doseq=True)}"
     )
