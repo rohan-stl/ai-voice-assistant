@@ -1,224 +1,999 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Shopping Assistant</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Shopping Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
 
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            display: flex;
-            justify-content: center;
-            padding-top: 80px;
-        }
+  <style>
+    /* ─── Reset & Base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        .assistant {
-            width: 450px;
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            text-align: center;
-        }
+    :root {
+      --bg:          #0a0b14;
+      --surface:     #12141f;
+      --surface2:    #1a1d2e;
+      --border:      rgba(255,255,255,0.08);
+      --accent:      #6c5ce7;
+      --accent2:     #a29bfe;
+      --green:       #00d68f;
+      --red:         #ff6b6b;
+      --text:        #e4e6f0;
+      --muted:       #636687;
+      --radius:      16px;
+      --shadow:      0 8px 32px rgba(0,0,0,0.5);
+    }
 
-        button {
-            width: 100px;
-            height: 100px;
-            border-radius: 50%;
-            border: none;
-            background: #111;
-            color: white;
-            font-size: 40px;
-            cursor: pointer;
-            margin: 20px;
-        }
+    html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); }
 
-        button.recording {
-            background: #d32f2f;
-        }
+    /* ─── Layout ────────────────────────────────────────────────── */
+    .app {
+      display: flex;
+      height: 100vh;
+      max-width: 1100px;
+      margin: 0 auto;
+      gap: 20px;
+      padding: 20px;
+    }
 
-        #status {
-            margin: 15px 0;
-            color: #666;
-        }
+    /* ─── Main Chat Panel ───────────────────────────────────────── */
+    .chat-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
 
-        #transcription,
-        #answer {
-            text-align: left;
-            margin-top: 20px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 10px;
-        }
-    </style>
+    /* Header */
+    .chat-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 18px 20px;
+      background: linear-gradient(135deg, #1e1040 0%, #0f0c29 100%);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .chat-header .logo {
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+    }
+
+    .chat-header .title { font-size: 17px; font-weight: 700; }
+    .chat-header .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .header-actions { margin-left: auto; display: flex; gap: 8px; }
+
+    .btn-icon {
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      border-radius: 8px; width: 34px; height: 34px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; font-size: 15px; transition: background 0.2s;
+    }
+    .btn-icon:hover { background: rgba(255,255,255,0.12); }
+
+    /* Messages area */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      scroll-behavior: smooth;
+    }
+
+    .messages::-webkit-scrollbar { width: 4px; }
+    .messages::-webkit-scrollbar-track { background: transparent; }
+    .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* Message bubbles */
+    .msg { display: flex; gap: 10px; align-items: flex-start; }
+    .msg.user { flex-direction: row-reverse; }
+
+    .msg-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; flex-shrink: 0;
+    }
+    .msg.ai .msg-avatar { background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+    .msg.user .msg-avatar { background: var(--surface2); }
+
+    .msg-bubble {
+      max-width: 70%;
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .msg.ai .msg-bubble {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px 14px 14px 14px;
+    }
+    .msg.user .msg-bubble {
+      background: linear-gradient(135deg, var(--accent) 0%, #8b7cf8 100%);
+      color: white;
+      border-radius: 14px 4px 14px 14px;
+    }
+
+    /* Stage badge */
+    .stage-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 20px; margin-bottom: 6px;
+    }
+    .stage-browse    { background: rgba(108,92,231,0.18); color: var(--accent2); }
+    .stage-variant   { background: rgba(253,203,110,0.18); color: #fdcb6e; }
+    .stage-confirm   { background: rgba(0,214,143,0.18); color: var(--green); }
+    .stage-error     { background: rgba(255,107,107,0.18); color: var(--red); }
+
+    /* ─── Product Grid ──────────────────────────────────────────── */
+    .products-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .product-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.18s, border-color 0.18s, box-shadow 0.18s;
+    }
+    .product-card:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 6px 24px rgba(108,92,231,0.2); }
+    .product-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(108,92,231,0.4); }
+
+    .product-card-img {
+      width: 100%; aspect-ratio: 1;
+      object-fit: cover; background: var(--surface2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px; color: var(--muted);
+    }
+    .product-card-img img { width: 100%; height: 100%; object-fit: cover; }
+
+    .product-card-body { padding: 10px; }
+    .product-card-title { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--text); }
+    .product-card-price { font-size: 13px; font-weight: 700; color: var(--accent2); margin-top: 4px; }
+    .product-card-type  { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+    /* Variant chips */
+    .variants-row {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      margin-top: 10px;
+    }
+
+    .variant-chip {
+      padding: 5px 11px; border-radius: 20px;
+      font-size: 12px; font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      cursor: pointer;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .variant-chip:hover { border-color: var(--accent); color: var(--accent2); }
+    .variant-chip.available { color: var(--text); }
+    .variant-chip.unavailable { color: var(--muted); text-decoration: line-through; cursor: default; }
+    .variant-chip.selected { background: var(--accent); border-color: var(--accent); color: white; }
+
+    /* ─── Confirm Card ──────────────────────────────────────────── */
+    .confirm-card {
+      background: linear-gradient(135deg, rgba(0,214,143,0.08) 0%, rgba(0,184,120,0.04) 100%);
+      border: 1px solid rgba(0,214,143,0.25);
+      border-radius: 14px;
+      padding: 16px;
+      margin-top: 12px;
+    }
+    .confirm-card h4 { font-size: 13px; font-weight: 600; color: var(--green); margin-bottom: 10px; }
+    .confirm-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+    .confirm-row span:first-child { color: var(--muted); }
+    .confirm-row span:last-child { font-weight: 600; }
+    .confirm-btns { display: flex; gap: 8px; margin-top: 14px; }
+
+    .btn {
+      padding: 9px 18px; border-radius: 10px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+    }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-confirm {
+      background: linear-gradient(135deg, var(--green), #00b894);
+      color: white; flex: 1;
+    }
+    .btn-confirm:hover { box-shadow: 0 4px 16px rgba(0,214,143,0.4); }
+
+    .btn-cancel {
+      background: var(--surface2); color: var(--muted);
+      border: 1px solid var(--border); flex: 0 0 auto;
+    }
+    .btn-cancel:hover { color: var(--text); }
+
+    /* ─── Cart Added Toast ──────────────────────────────────────── */
+    .cart-success {
+      background: linear-gradient(135deg, rgba(0,214,143,0.1), rgba(0,184,120,0.05));
+      border: 1px solid rgba(0,214,143,0.3);
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-top: 12px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .cart-success-icon { font-size: 24px; }
+    .cart-success-text { font-size: 13px; line-height: 1.5; }
+    .cart-success-text strong { color: var(--green); }
+
+    /* ─── Input area ────────────────────────────────────────────── */
+    .input-area {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .mic-btn {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #8b7cf8);
+      border: none; cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
+      font-size: 18px; color: white; flex-shrink: 0;
+      box-shadow: 0 4px 14px rgba(108,92,231,0.4);
+      transition: transform 0.15s, box-shadow 0.15s;
+      position: relative;
+    }
+    .mic-btn:hover { transform: scale(1.07); box-shadow: 0 6px 20px rgba(108,92,231,0.5); }
+    .mic-btn.recording { background: linear-gradient(135deg, var(--red), #e84393); box-shadow: 0 4px 14px rgba(255,107,107,0.5); }
+    .mic-btn.recording::after {
+      content: ''; position: absolute;
+      width: 100%; height: 100%; border-radius: 50%;
+      border: 2px solid var(--red); animation: pulse 1.2s ease-out infinite;
+    }
+    @keyframes pulse { to { transform: scale(1.7); opacity: 0; } }
+
+    .text-input {
+      flex: 1; background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 24px; padding: 11px 18px;
+      font-size: 14px; color: var(--text);
+      font-family: 'Inter', sans-serif;
+      outline: none; transition: border-color 0.2s;
+      resize: none; line-height: 1.4;
+    }
+    .text-input:focus { border-color: var(--accent); }
+    .text-input::placeholder { color: var(--muted); }
+
+    .send-btn {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #8b7cf8);
+      border: none; cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
+      font-size: 18px; color: white; flex-shrink: 0;
+      box-shadow: 0 4px 14px rgba(108,92,231,0.4);
+      transition: transform 0.15s, opacity 0.15s;
+    }
+    .send-btn:hover { transform: scale(1.07); }
+    .send-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+    /* Typing indicator */
+    .typing { display: flex; align-items: center; gap: 5px; padding: 10px 0; }
+    .typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce 1.2s ease-in-out infinite; }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+
+    /* ─── Cart Sidebar ──────────────────────────────────────────── */
+    .cart-panel {
+      width: 280px;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      flex-shrink: 0;
+    }
+
+    .cart-header {
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .cart-header h3 { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .cart-badge {
+      background: var(--accent); color: white;
+      font-size: 10px; font-weight: 700;
+      border-radius: 20px; padding: 2px 7px; min-width: 20px; text-align: center;
+    }
+
+    .cart-items {
+      flex: 1; overflow-y: auto; padding: 14px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+
+    .cart-item {
+      display: flex; gap: 10px; align-items: center;
+      padding: 10px; border-radius: 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+    }
+    .cart-item-img {
+      width: 44px; height: 44px; border-radius: 8px;
+      object-fit: cover; background: var(--bg); flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .cart-item-img img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
+    .cart-item-info { flex: 1; min-width: 0; }
+    .cart-item-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cart-item-variant { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .cart-item-price { font-size: 12px; font-weight: 700; color: var(--accent2); margin-top: 3px; }
+    .cart-item-qty { font-size: 10px; color: var(--muted); }
+
+    .cart-footer {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .cart-total { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .cart-total span:first-child { font-size: 13px; color: var(--muted); }
+    .cart-total span:last-child { font-size: 18px; font-weight: 700; }
+
+    .btn-checkout {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), #8b7cf8);
+      color: white; font-size: 14px; font-weight: 700;
+      border: none; cursor: pointer;
+      box-shadow: 0 4px 16px rgba(108,92,231,0.35);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .btn-checkout:hover { transform: translateY(-1px); box-shadow: 0 6px 22px rgba(108,92,231,0.5); }
+    .btn-checkout:disabled { opacity: 0.4; cursor: default; transform: none; box-shadow: none; }
+
+    .cart-empty {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: var(--muted); gap: 8px; padding: 20px;
+    }
+    .cart-empty-icon { font-size: 40px; opacity: 0.4; }
+    .cart-empty-text { font-size: 13px; text-align: center; }
+
+    /* ─── Storefront link ───────────────────────────────────────── */
+    .storefront-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--accent2);
+      text-decoration: none; margin-top: 8px;
+      padding: 4px 10px; border-radius: 20px;
+      border: 1px solid rgba(108,92,231,0.3);
+      transition: background 0.15s;
+    }
+    .storefront-link:hover { background: rgba(108,92,231,0.1); }
+
+    /* ─── Status bar ────────────────────────────────────────────── */
+    .status-bar {
+      padding: 8px 20px;
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    /* ─── Responsive ────────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      .app { flex-direction: column; padding: 10px; }
+      .cart-panel { width: 100%; max-height: 240px; }
+    }
+
+    /* Fade-in animation for messages */
+    .msg { animation: fadeUp 0.25s ease; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+
+    /* Markdown bold rendering in bubble */
+    .msg-bubble b, .msg-bubble strong { font-weight: 700; color: white; }
+  </style>
 </head>
-
 <body>
+<div class="app">
 
-<div class="assistant">
+  <!-- ── Chat Panel ─────────────────────────────────────────── -->
+  <div class="chat-panel">
 
-    <h1>AI Shopping Assistant</h1>
-
-    <p>Ask me about our products.</p>
-
-    <button id="recordButton">🎤</button>
-
-    <div id="status">
-        Click the microphone to start
+    <div class="chat-header">
+      <div class="logo">🛍️</div>
+      <div>
+        <div class="title">AI Shopping Assistant</div>
+        <div class="subtitle">Powered by your Shopify store</div>
+      </div>
+      <div class="header-actions">
+        <div class="btn-icon" id="resetBtn" title="New conversation">🔄</div>
+      </div>
     </div>
 
-    <div id="transcription">
-        <strong>You:</strong>
-        <div id="userText"></div>
+    <div class="messages" id="messages">
+      <!-- Welcome message injected by JS -->
     </div>
 
-    <div id="answer">
-        <strong>AI:</strong>
-        <div id="aiText"></div>
+    <div class="status-bar" id="statusBar">Ready — speak or type your question</div>
+
+    <div class="input-area">
+      <button class="mic-btn" id="micBtn" title="Hold to record">🎤</button>
+      <input
+        class="text-input"
+        id="textInput"
+        type="text"
+        placeholder="Ask me about products, sizes, prices…"
+        autocomplete="off"
+      />
+      <button class="send-btn" id="sendBtn">➤</button>
     </div>
+  </div>
+
+  <!-- ── Cart Sidebar ───────────────────────────────────────── -->
+  <div class="cart-panel">
+    <div class="cart-header">
+      <h3>🛒 Cart <span class="cart-badge" id="cartBadge">0</span></h3>
+    </div>
+
+    <div class="cart-items" id="cartItems">
+      <div class="cart-empty">
+        <div class="cart-empty-icon">🛒</div>
+        <div class="cart-empty-text">Your cart is empty.<br/>Ask me to find something!</div>
+      </div>
+    </div>
+
+    <div class="cart-footer" id="cartFooter" style="display:none">
+      <div class="cart-total">
+        <span>Total</span>
+        <span id="cartTotal">$0.00</span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);text-align:center;margin-bottom:6px;">
+        ⚠️ Use the button below to checkout — the store cart icon is separate.
+      </div>
+      <button class="btn-checkout" id="checkoutBtn" disabled>Proceed to Checkout →</button>
+    </div>
+  </div>
 
 </div>
 
 <script>
+// ─────────────────────────────────────────────────────────
+// Config — filled from page globals when embedded in Shopify
+// ─────────────────────────────────────────────────────────
+const CONFIG = {
+  apiBase: window.AI_ASSISTANT_API_BASE || "http://localhost:8000",
+  shopDomain: window.Shopify?.shop || "",
+  storefrontToken: window.AI_ASSISTANT_STOREFRONT_TOKEN || "",
+  adminToken: window.AI_ASSISTANT_ADMIN_TOKEN || "",
+};
 
-let mediaRecorder;
+// ─────────────────────────────────────────────────────────
+// Session — persisted across page refreshes
+// ─────────────────────────────────────────────────────────
+let sessionId = localStorage.getItem("ai_session_id");
+if (!sessionId) {
+  sessionId = "sess_" + Math.random().toString(36).slice(2, 10) + Date.now();
+  localStorage.setItem("ai_session_id", sessionId);
+}
+
+// ─────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────
+let isProcessing = false;
+let mediaRecorder = null;
 let audioChunks = [];
+let currentStage = "browse";
+let cartData = null;
+let currentAudio = null;
 
-const recordButton = document.getElementById("recordButton");
-const status = document.getElementById("status");
-const userText = document.getElementById("userText");
-const aiText = document.getElementById("aiText");
+const $messages = document.getElementById("messages");
+const $textInput = document.getElementById("textInput");
+const $sendBtn = document.getElementById("sendBtn");
+const $micBtn = document.getElementById("micBtn");
+const $statusBar = document.getElementById("statusBar");
+const $cartItems = document.getElementById("cartItems");
+const $cartBadge = document.getElementById("cartBadge");
+const $cartFooter = document.getElementById("cartFooter");
+const $cartTotal = document.getElementById("cartTotal");
+const $checkoutBtn = document.getElementById("checkoutBtn");
+const $resetBtn = document.getElementById("resetBtn");
 
-recordButton.addEventListener("click", async () => {
+// ─────────────────────────────────────────────────────────
+// Message rendering helpers
+// ─────────────────────────────────────────────────────────
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
-    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+function renderMarkdown(str) {
+  return escapeHtml(str)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br/>");
+}
 
-        try {
+function appendMsg(role, html) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.innerHTML = `
+    <div class="msg-avatar">${role === "ai" ? "🤖" : "👤"}</div>
+    <div class="msg-bubble">${html}</div>
+  `;
+  $messages.appendChild(div);
+  $messages.scrollTop = $messages.scrollHeight;
+  return div;
+}
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: true
-            });
+function showTyping() {
+  const div = document.createElement("div");
+  div.className = "msg ai";
+  div.id = "typing-indicator";
+  div.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-bubble">
+      <div class="typing">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+    </div>
+  `;
+  $messages.appendChild(div);
+  $messages.scrollTop = $messages.scrollHeight;
+}
 
-            mediaRecorder = new MediaRecorder(stream);
+function removeTyping() {
+  const el = document.getElementById("typing-indicator");
+  if (el) el.remove();
+}
 
-            audioChunks = [];
+// ─────────────────────────────────────────────────────────
+// Stage badge
+// ─────────────────────────────────────────────────────────
+function stageBadge(stage) {
+  const labels = {
+    browse: ["🔍 Browsing", "stage-browse"],
+    awaiting_variant: ["✋ Choose Option", "stage-variant"],
+    awaiting_confirm: ["✅ Confirm", "stage-confirm"],
+    done: ["✅ Added", "stage-confirm"],
+  };
+  const [label, cls] = labels[stage] || ["💬 Chat", "stage-browse"];
+  return `<span class="stage-badge ${cls}">${label}</span><br/>`;
+}
 
-            mediaRecorder.ondataavailable = event => {
-                audioChunks.push(event.data);
-            };
+// ─────────────────────────────────────────────────────────
+// Product cards
+// ─────────────────────────────────────────────────────────
+function renderProducts(products, stage) {
+  if (!products || products.length === 0) return "";
 
-            mediaRecorder.onstop = async () => {
+  const cards = products.slice(0, 12).map(p => {
+    const variants = (p.variants?.nodes || []);
+    const minPrice = Math.min(...variants.map(v => parseFloat(v.price || 0)));
+    const imgUrl = p.featuredImage?.url || "";
+    const imgHtml = imgUrl
+      ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(p.title)}" loading="lazy" />`
+      : `<span>${productEmoji(p.productType)}</span>`;
 
-                status.textContent = "Processing...";
+    const variantChips = variants.slice(0, 6).map(v => {
+      const avail = v.availableForSale;
+      return `<span class="variant-chip ${avail ? "available" : "unavailable"}"
+               data-variant-id="${escapeHtml(v.id)}"
+               data-product="${escapeHtml(p.title)}"
+               data-variant="${escapeHtml(v.title)}"
+               data-price="${escapeHtml(v.price)}"
+               data-avail="${avail}"
+               title="${avail ? "In stock" : "Out of stock"}"
+               onclick="handleVariantChipClick(this)">
+               ${escapeHtml(v.title)}
+             </span>`;
+    }).join("");
 
-                const audioBlob = new Blob(
-                    audioChunks,
-                    { type: "audio/webm" }
-                );
+    return `
+      <div class="product-card" onclick="handleProductClick(this)"
+           data-product='${JSON.stringify({id: p.id, title: p.title, productType: p.productType, vendor: p.vendor, handle: p.handle, onlineStoreUrl: p.onlineStoreUrl, featuredImage: p.featuredImage, variants: p.variants}).replace(/'/g, "&#39;")}'>
+        <div class="product-card-img">${imgHtml}</div>
+        <div class="product-card-body">
+          <div class="product-card-title">${escapeHtml(p.title)}</div>
+          <div class="product-card-price">From $${minPrice.toFixed(2)}</div>
+          <div class="product-card-type">${escapeHtml(p.productType || p.vendor || "")}</div>
+          ${variants.length > 0 ? `<div class="variants-row">${variantChips}</div>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
 
-                const formData = new FormData();
+  return `<div class="products-grid">${cards}</div>`;
+}
 
-                formData.append(
-                    "file",
-                    audioBlob,
-                    "recording.webm"
-                );
+function productEmoji(type) {
+  const map = { "T-Shirt": "👕", "Snowboard": "🏂", "Shoes": "👟", "Hoodie": "🧥", "Pants": "👖", "Hat": "🧢", "Bag": "👜" };
+  return map[type] || "🛍️";
+}
 
-                try {
+// ─────────────────────────────────────────────────────────
+// Confirm card
+// ─────────────────────────────────────────────────────────
+function renderConfirmCard(selectedProduct, selectedVariant, quantity) {
+  if (!selectedProduct || !selectedVariant) return "";
+  const price = parseFloat(selectedVariant.price || 0);
+  const total = price * quantity;
+  return `
+    <div class="confirm-card">
+      <h4>📦 Confirm your order</h4>
+      <div class="confirm-row"><span>Product</span><span>${escapeHtml(selectedProduct.title)}</span></div>
+      <div class="confirm-row"><span>Option</span><span>${escapeHtml(selectedVariant.title)}</span></div>
+      <div class="confirm-row"><span>Qty</span><span>${quantity}</span></div>
+      <div class="confirm-row"><span>Price</span><span>$${price.toFixed(2)} each</span></div>
+      ${quantity > 1 ? `<div class="confirm-row"><span>Total</span><span>$${total.toFixed(2)}</span></div>` : ""}
+      <div class="confirm-btns">
+        <button class="btn btn-confirm" onclick="sendMessage('Yes, add to cart')">✅ Add to Cart</button>
+        <button class="btn btn-cancel" onclick="sendMessage('Cancel')">✗ Cancel</button>
+      </div>
+    </div>
+  `;
+}
 
-                    const response = await fetch(
-                        "http://localhost:8001/voice",
-                        {
-                            method: "POST",
-                            body: formData
-                        }
-                    );
+// ─────────────────────────────────────────────────────────
+// Cart success card
+// ─────────────────────────────────────────────────────────
+function renderCartSuccess(cart) {
+  if (!cart) return "";
+  const lastLine = cart.lines?.[cart.lines.length - 1];
+  if (!lastLine) return "";
+  const checkoutHtml = cart.checkout_url
+    ? `<a href="${escapeHtml(cart.checkout_url)}" target="_blank" class="btn-checkout" style="display:inline-block;margin-top:8px;text-decoration:none;text-align:center;">Proceed to Checkout →</a>`
+    : "";
+  return `
+    <div class="cart-success">
+      <div class="cart-success-icon">🎉</div>
+      <div class="cart-success-text">
+        <strong>${escapeHtml(lastLine.product_title)}</strong> (${escapeHtml(lastLine.variant_title)}) × ${lastLine.quantity}<br/>
+        added to your cart!<br/>
+        <span style="font-size:10px;color:var(--muted);">Use the <strong>Checkout button</strong> below — not the store's cart icon.</span>
+        ${checkoutHtml}
+      </div>
+    </div>
+  `;
+}
 
-                    if (!response.ok) {
-                        throw new Error(`HTTP error: ${response.status}`);
-                    }
+// ─────────────────────────────────────────────────────────
+// Cart sidebar
+// ─────────────────────────────────────────────────────────
+function updateCartSidebar(cart) {
+  if (!cart || !cart.lines || cart.lines.length === 0) {
+    $cartItems.innerHTML = `
+      <div class="cart-empty">
+        <div class="cart-empty-icon">🛒</div>
+        <div class="cart-empty-text">Your cart is empty.<br/>Ask me to find something!</div>
+      </div>`;
+    $cartBadge.textContent = "0";
+    $cartFooter.style.display = "none";
+    $checkoutBtn.disabled = true;
+    return;
+  }
 
-                    const audioBlob = await response.blob();
+  cartData = cart;
+  $cartBadge.textContent = cart.total_quantity || cart.lines.length;
 
-                    const audioUrl = URL.createObjectURL(audioBlob);
+  const itemsHtml = cart.lines.map(line => {
+    const imgHtml = line.product_image
+      ? `<div class="cart-item-img"><img src="${escapeHtml(line.product_image)}" alt="${escapeHtml(line.product_title)}" /></div>`
+      : `<div class="cart-item-img">🛍️</div>`;
+    return `
+      <div class="cart-item">
+        ${imgHtml}
+        <div class="cart-item-info">
+          <div class="cart-item-name">${escapeHtml(line.product_title)}</div>
+          <div class="cart-item-variant">${escapeHtml(line.variant_title)}</div>
+          <div class="cart-item-price">$${parseFloat(line.price).toFixed(2)}</div>
+        </div>
+        <div class="cart-item-qty">×${line.quantity}</div>
+      </div>`;
+  }).join("");
 
-                    const audio = new Audio(audioUrl);
+  $cartItems.innerHTML = itemsHtml;
+  $cartFooter.style.display = "block";
+  $cartTotal.textContent = cart.total ? `$${parseFloat(cart.total).toFixed(2)}` : "—";
 
-                    await audio.play();
+  if (cart.checkout_url) {
+    $checkoutBtn.disabled = false;
+    $checkoutBtn.onclick = () => window.open(cart.checkout_url, "_blank");
+    $checkoutBtn.textContent = "Proceed to Checkout →";
+  } else {
+    $checkoutBtn.disabled = true;
+  }
+}
 
-                    audio.onended = () => {
-                        URL.revokeObjectURL(audioUrl);
-                    };
+// ─────────────────────────────────────────────────────────
+// Sync item to native Shopify theme cart via /cart/add.js
+// This makes the item appear in the store's cart icon.
+// Only works when the widget is embedded on the Shopify domain.
+// ─────────────────────────────────────────────────────────
+async function syncToThemeCart(cart) {
+  try {
+    if (!cart || !cart.lines || cart.lines.length === 0) return;
+    const lastLine = cart.lines[cart.lines.length - 1];
+    if (!lastLine || !lastLine.variant_id) return;
 
-                    status.textContent =
-                        "Done. Click the microphone to speak again.";
+    // Extract numeric ID from GID (gid://shopify/ProductVariant/12345 → 12345)
+    const rawId = String(lastLine.variant_id);
+    const numericId = rawId.includes("/") ? parseInt(rawId.split("/").pop(), 10) : parseInt(rawId, 10);
+    if (!numericId || isNaN(numericId)) return;
 
-                    console.log("Response:", data);
+    const resp = await fetch("/cart/add.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      body: JSON.stringify({ items: [{ id: numericId, quantity: lastLine.quantity || 1 }] }),
+    });
 
-                    userText.textContent =
-                        data.transcription || "";
-
-                    aiText.textContent =
-                        data.answer || "";
-
-                    if (data.audio_url) {
-
-                        const audio =
-                            new Audio(data.audio_url);
-
-                        await audio.play();
-                    }
-
-                    status.textContent =
-                        "Click the microphone to speak again.";
-
-                } catch (error) {
-
-                    console.error(error);
-
-                    status.textContent =
-                        "Something went wrong.";
-
-                }
-
-            };
-
-            mediaRecorder.start();
-
-            recordButton.classList.add("recording");
-
-            recordButton.textContent = "⏹";
-
-            status.textContent =
-                "Listening... Click again to stop.";
-
-        } catch (error) {
-
-            console.error(error);
-
-            status.textContent =
-                "Microphone permission was denied.";
-
-        }
-
-    } else {
-
-        mediaRecorder.stop();
-
-        mediaRecorder.stream
-            .getTracks()
-            .forEach(track => track.stop());
-
-        recordButton.classList.remove("recording");
-
-        recordButton.textContent = "🎤";
+    if (!resp.ok) {
+      console.warn("[AI Cart] /cart/add.js returned", resp.status);
+      return;
     }
 
+    // Refresh the theme cart count badge
+    const cartResp = await fetch("/cart.js");
+    if (cartResp.ok) {
+      const nativeCart = await cartResp.json();
+      const count = nativeCart.item_count || 0;
+      // Update common cart badge selectors used by Shopify themes
+      document.querySelectorAll(
+        ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
+      ).forEach(el => { el.textContent = count; if (count > 0) el.removeAttribute("hidden"); });
+      console.log(`[AI Cart] Synced to native cart — ${count} item(s)`);
+    }
+  } catch (err) {
+    // Non-fatal: widget may be running outside Shopify (e.g. localhost dev)
+    console.warn("[AI Cart] Native cart sync skipped (not on Shopify domain):", err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Process API response
+// ─────────────────────────────────────────────────────────
+function processResponse(data, userMessage) {
+  currentStage = data.stage || "browse";
+
+  let html = stageBadge(currentStage);
+  html += renderMarkdown(data.answer || "");
+
+  // Show product grid when browsing
+  if (data.products && data.products.length > 0 && currentStage === "browse") {
+    html += renderProducts(data.products, currentStage);
+  }
+
+  // Show product when a single match was found and we're in variant selection
+  if (data.products && data.products.length > 0 && currentStage === "awaiting_variant") {
+    html += renderProducts(data.products, currentStage);
+  }
+
+  // Confirm card
+  if (currentStage === "awaiting_confirm" && data.selected_product && data.selected_variant) {
+    html += renderConfirmCard(data.selected_product, data.selected_variant, data.quantity || 1);
+  }
+
+  // Cart success
+  if (data.cart) {
+    html += renderCartSuccess(data.cart);
+    updateCartSidebar(data.cart);
+    // Sync to native Shopify theme cart so the cart icon updates
+    syncToThemeCart(data.cart);
+  }
+
+  // Storefront link
+  if (data.storefront_url) {
+    html += `<br/><a class="storefront-link" href="${escapeHtml(data.storefront_url)}" target="_blank">🔗 View on store</a>`;
+  }
+
+  appendMsg("ai", html);
+
+  // Play audio
+  if (data.audio) {
+    playBase64Audio(data.audio);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Send a text message
+// ─────────────────────────────────────────────────────────
+async function sendMessage(text) {
+  const message = (text || $textInput.value).trim();
+  if (!message || isProcessing) return;
+
+  $textInput.value = "";
+  setProcessing(true);
+
+  appendMsg("user", escapeHtml(message));
+  showTyping();
+
+  try {
+    const res = await fetch(`${CONFIG.apiBase}/voice-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        shop_domain: CONFIG.shopDomain || undefined,
+        storefront_token: CONFIG.storefrontToken || undefined,
+        admin_token: CONFIG.adminToken || undefined,
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    removeTyping();
+    processResponse(data, message);
+    setStatus(`Stage: ${currentStage}`);
+
+  } catch (err) {
+    removeTyping();
+    appendMsg("ai", "⚠️ Something went wrong. Please check that the backend is running.");
+    setStatus("Error — check backend connection");
+    console.error(err);
+  } finally {
+    setProcessing(false);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Voice recording
+// ─────────────────────────────────────────────────────────
+$micBtn.addEventListener("click", async () => {
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      $micBtn.classList.remove("recording");
+      $micBtn.textContent = "🎤";
+      setStatus("Transcribing…");
+      setProcessing(true);
+      showTyping();
+
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      const form = new FormData();
+      form.append("file", blob, "recording.webm");
+      form.append("session_id", sessionId);
+      if (CONFIG.shopDomain) form.append("shop_domain", CONFIG.shopDomain);
+      if (CONFIG.storefrontToken) form.append("storefront_token", CONFIG.storefrontToken);
+      if (CONFIG.adminToken) form.append("admin_token", CONFIG.adminToken);
+
+      try {
+        const res = await fetch(`${CONFIG.apiBase}/voice`, { method: "POST", body: form });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const data = await res.json();
+        removeTyping();
+        if (data.transcription) appendMsg("user", `🎙️ ${escapeHtml(data.transcription)}`);
+        processResponse(data, data.transcription);
+        setStatus(`Stage: ${currentStage}`);
+      } catch (err) {
+        removeTyping();
+        appendMsg("ai", "⚠️ Could not process voice input. Please try again.");
+        console.error(err);
+      } finally {
+        setProcessing(false);
+      }
+    };
+
+    mediaRecorder.start();
+    $micBtn.classList.add("recording");
+    $micBtn.textContent = "⏹";
+    setStatus("🎙️ Recording — click to stop");
+  } catch {
+    setStatus("Microphone access denied");
+  }
 });
 
-</script>
+// ─────────────────────────────────────────────────────────
+// Click variant chip → send natural language selection
+// ─────────────────────────────────────────────────────────
+function handleVariantChipClick(el) {
+  if (el.dataset.avail === "false") return;
+  const product = el.dataset.product;
+  const variant = el.dataset.variant;
+  sendMessage(`Select ${variant} of ${product}`);
+}
 
+function handleProductClick(el) {
+  try {
+    const data = JSON.parse(el.dataset.product.replace(/&#39;/g, "'"));
+    sendMessage(`Tell me more about ${data.title}`);
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────
+// Audio playback
+// ─────────────────────────────────────────────────────────
+function playBase64Audio(b64) {
+  try {
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+    currentAudio = new Audio(url);
+    currentAudio.onended = () => URL.revokeObjectURL(url);
+    currentAudio.play().catch(() => {});
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────────────────────
+function setProcessing(val) {
+  isProcessing = val;
+  $sendBtn.disabled = val;
+  $textInput.disabled = val;
+}
+
+function setStatus(msg) {
+  $statusBar.textContent = msg;
+}
+
+$sendBtn.addEventListener("click", () => sendMessage());
+$textInput.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+
+$resetBtn.addEventListener("click", async () => {
+  if (!confirm("Start a new conversation? This won't clear your cart.")) return;
+  await fetch(`${CONFIG.apiBase}/session/reset?session_id=${sessionId}`, { method: "POST" }).catch(() => {});
+  $messages.innerHTML = "";
+  currentStage = "browse";
+  appendWelcome();
+  setStatus("Conversation reset — ready");
+});
+
+$checkoutBtn.addEventListener("click", () => {
+  if (cartData?.checkout_url) window.open(cartData.checkout_url, "_blank");
+});
+
+function appendWelcome() {
+  appendMsg("ai",
+    `<span class="stage-badge stage-browse">🔍 Ready</span><br/>
+    Hi! I'm your AI shopping assistant. 👋<br/><br/>
+    You can ask me things like:<br/>
+    • <em>"Show me T-shirts under $50"</em><br/>
+    • <em>"Find a blue snowboard"</em><br/>
+    • <em>"Add size M to my cart"</em><br/><br/>
+    What are you looking for today?`
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────
+appendWelcome();
+setStatus(`Session: ${sessionId.slice(0, 16)}…`);
+</script>
 </body>
 </html>

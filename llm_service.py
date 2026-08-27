@@ -1,3 +1,21 @@
+"""
+llm_service.py
+
+Handles all LLM interaction via OpenRouter.
+
+Two entry points:
+  ask_llm(message, products)
+      Used for the initial browse stage — extracts intent + product filters.
+
+  ask_llm_cart(message, products, filtered_products, selected_product)
+      Used after the user has seen results — extracts:
+        intent: select_variant | add_to_cart | confirm_yes | confirm_no
+                | filter_products | general_question
+        product_ref: which product the user is talking about
+        variant_ref: size / color / sku the user mentioned
+        quantity:    how many units they want (default 1)
+"""
+
 import os
 import json
 import time
@@ -8,16 +26,22 @@ load_dotenv()
 
 client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
+    base_url="https://openrouter.ai/api/v1",
 )
 
-MODEL_NAME = "openai/gpt-oss-20b:free"
-
+MODEL_PRIORITY = [
+    "openrouter/free",
+    "google/gemma-3-27b-it:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+]
+MODEL_NAME = MODEL_PRIORITY[0]
 MAX_RETRIES = 3
-
-# Cap how long any single retry wait can be, even if the provider
-# reports a much larger retry_after_seconds value.
 MAX_RETRY_WAIT_SECONDS = 30
+
+
+# -------------------------------------------------------
+# Fallback responses
+# -------------------------------------------------------
 
 FALLBACK_RESPONSE = {
     "intent": "general_question",
@@ -28,125 +52,126 @@ FALLBACK_RESPONSE = {
         "size": None,
         "vendor": None,
         "max_price": None,
-        "min_price": None
+        "min_price": None,
     },
-    "answer": "I didn't understand that. Please try again."
+    "answer": "I didn't understand that. Please try again.",
 }
 
 RATE_LIMITED_RESPONSE = {
-    "intent": "general_question",
-    "filters": {
-        "product_name": None,
-        "product_type": None,
-        "color": None,
-        "size": None,
-        "vendor": None,
-        "max_price": None,
-        "min_price": None
-    },
+    **FALLBACK_RESPONSE,
     "answer": (
         "I'm getting a lot of requests right now — "
         "please try again in a few seconds."
-    )
+    ),
+}
+
+FALLBACK_CART_RESPONSE = {
+    "intent": "general_question",
+    "product_ref": None,
+    "variant_ref": None,
+    "quantity": 1,
+    "answer": "I didn't understand that. Could you please clarify?",
 }
 
 
+# -------------------------------------------------------
+# Internal helpers
+# -------------------------------------------------------
+
 def _extract_retry_after_seconds(error: RateLimitError):
-    """
-    Pull the provider-suggested retry_after_seconds out of the error
-    body if present (OpenRouter includes this in error.metadata).
-    Returns None if it can't be found.
-    """
     try:
         body = getattr(error, "body", None) or {}
         metadata = body.get("error", {}).get("metadata", {})
         retry_after = metadata.get("retry_after_seconds")
-
         if retry_after is not None:
             return float(retry_after)
-
     except Exception:
         pass
-
     return None
 
 
 def _call_llm_with_retry(prompt: str):
-    """
-    Calls the LLM, retrying on RateLimitError with the provider's
-    suggested wait time (falling back to simple exponential backoff
-    if none is given). Re-raises the last error if all retries fail.
-    """
+    """Try each model in MODEL_PRIORITY until one succeeds."""
     last_error = None
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            return client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-        except RateLimitError as error:
-            last_error = error
-
-            wait_seconds = _extract_retry_after_seconds(error)
-
-            if wait_seconds is None:
-                # No hint from the provider — simple exponential backoff
-                wait_seconds = 2 ** attempt
-
-            wait_seconds = min(wait_seconds, MAX_RETRY_WAIT_SECONDS)
-
-            is_last_attempt = attempt == MAX_RETRIES - 1
-
-            print(
-                f"LLM rate-limited (attempt {attempt + 1}/{MAX_RETRIES}). "
-                f"{'Giving up.' if is_last_attempt else f'Retrying in {wait_seconds}s...'}"
-            )
-
-            if not is_last_attempt:
-                time.sleep(wait_seconds)
-
+    for model in MODEL_PRIORITY:
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"[LLM] Calling {model} (attempt {attempt + 1})")
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,  # low temp → more deterministic JSON
+                )
+                if resp.choices and resp.choices[0].message.content:
+                    return resp
+            except RateLimitError as error:
+                last_error = error
+                wait_seconds = _extract_retry_after_seconds(error)
+                if wait_seconds is None:
+                    wait_seconds = 2 ** attempt
+                wait_seconds = min(wait_seconds, MAX_RETRY_WAIT_SECONDS)
+                is_last = attempt == MAX_RETRIES - 1
+                print(
+                    f"[LLM] Rate-limited on {model} (attempt {attempt + 1}/{MAX_RETRIES}). "
+                    f"{'Trying next model.' if is_last else f'Retrying in {wait_seconds}s...'}"
+                )
+                if not is_last:
+                    time.sleep(wait_seconds)
+            except Exception as error:
+                last_error = error
+                print(f"[LLM] Error on {model}: {error}")
+                break  # try next model immediately
     raise last_error
 
 
-def ask_llm(message: str, products: list) -> dict:
+def _parse_json(content: str, fallback: dict) -> dict:
+    content = content.strip()
+    # Strip markdown code fences if present
+    if content.startswith("```"):
+        lines = content.splitlines()
+        content = "\n".join(
+            line for line in lines if not line.startswith("```")
+        ).strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {**fallback, "answer": content}
 
-    product_text = []
 
+def _build_product_text(products: list) -> str:
+    lines = []
     for product in products:
         variants = product.get("variants", {}).get("nodes", [])
-
         variant_text = []
-
-        for variant in variants:
+        for v in variants:
+            opts = v.get("selectedOptions", [])
+            opt_str = ", ".join(f"{o['name']}: {o['value']}" for o in opts) if opts else v.get("title", "")
             variant_text.append(
-                f"Variant: {variant.get('title', '')}, "
-                f"Price: ${variant.get('price', '')}, "
-                f"Available: {variant.get('availableForSale', False)}, "
-                f"Inventory: {variant.get('inventoryQuantity', 0)}"
+                f"  - VariantID: {v.get('id', '')}, {opt_str}, "
+                f"Price: ${v.get('price', '')}, "
+                f"Available: {v.get('availableForSale', False)}, "
+                f"Inventory: {v.get('inventoryQuantity', 0)}"
             )
-
-        product_text.append(
-            f"""
-Product: {product.get('title', '')}
-Product Type: {product.get('productType', '')}
-Description: {product.get('description', '')}
-Vendor: {product.get('vendor', '')}
-Status: {product.get('status', '')}
-Total Inventory: {product.get('totalInventory', 0)}
-Product URL: {product.get('onlineStoreUrl', '')}
-Variants:
-{" | ".join(variant_text)}
-"""
+        lines.append(
+            f"Product: {product.get('title', '')}\n"
+            f"ProductType: {product.get('productType', '')}\n"
+            f"Vendor: {product.get('vendor', '')}\n"
+            f"Variants:\n" + "\n".join(variant_text)
         )
+    return "\n\n".join(lines)
 
-    product_text = "\n".join(product_text)
+
+# -------------------------------------------------------
+# Public entry point 1: Browse / filter
+# -------------------------------------------------------
+
+def ask_llm(message: str, products: list) -> dict:
+    """
+    Extract intent and product filters from a user browse query.
+    Returns:
+      { intent, filters, answer }
+    """
+    product_text = _build_product_text(products)
 
     prompt = f"""
 You are an AI shopping assistant for a Shopify store.
@@ -160,9 +185,7 @@ Available products:
 Your job is to understand the customer's request and determine whether
 they are asking to filter/find products or asking a general question.
 
-Return ONLY valid JSON.
-
-The JSON must have exactly this structure:
+Return ONLY valid JSON with exactly this structure:
 
 {{
   "intent": "filter_products" or "general_question",
@@ -174,201 +197,133 @@ The JSON must have exactly this structure:
     "vendor": null,
     "max_price": null,
     "min_price": null
-}},
+  }},
   "answer": "short conversational response"
 }}
 
 Rules:
-
-1. If the customer is looking for products, use:
-   "intent": "filter_products"
-
-2. Extract product filters from the customer's request.
-
-3. Possible filters include:
-   - product_name
-   - product_type
-   - color
-   - size
-   - vendor
-   - max_price
-   - min_price
-
-4. If a filter was not specified, set it to null.
-
-5. Do NOT invent filters.
-
-5a. Always spell "product_type" for T-shirts exactly as "T-Shirt"
-    (capital T, capital S), matching how it appears in the product
-    catalog above. Use this exact casing consistently, never
-    "T-shirt" or "t-shirt".
-
-5b. "product_name" vs "product_type" — these are different things:
-    - "product_type" is a general category (e.g. "Snowboard", "T-Shirt")
-      and should be used when the customer describes what KIND of thing
-      they want.
-    - "product_name" is one specific, named product taken from the
-      catalog above (e.g. "The Complete Snowboard", "Classic T-Shirt")
-      and should be used when the customer refers to a particular
-      product by name, even loosely (e.g. "the complete snowboard",
-      "the archived one", "that classic tee").
-    When the customer names a specific product, set "product_name" to
-    that product's exact title as it appears in the catalog above, and
-    leave "product_type" null unless the customer ALSO separately
-    mentions a general category. Never put a specific product's name
-    into "product_type".
-
-6. If the customer says:
-   "Show me blue T-shirts"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here are the blue T-shirts I found."
-   }}
-
-7. If the customer says:
-   "Show me Nike blue T-shirts under $40"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "vendor": "Nike",
-       "max_price": 40,
-       "min_price": null
-     }},
-     "answer": "Here are the Nike blue T-shirts under $40."
-   }}
-
-If the customer says:
-   "Show me blue T-shirts of size Medium"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "size": "M",
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here are the blue medium T-shirts I found."
-   }}
-
-7a. If the customer says:
-   "Show me the complete snowboard"
-
-   and the catalog above contains a product titled "The Complete
-   Snowboard", return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": "The Complete Snowboard",
-       "product_type": null,
-       "color": null,
-       "size": null,
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here's the Complete Snowboard."
-   }}
-
-7b. If the customer says:
-   "Show me the complete snowboard under $700"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": "The Complete Snowboard",
-       "product_type": null,
-       "color": null,
-       "size": null,
-       "vendor": null,
-       "max_price": 700,
-       "min_price": null
-     }},
-     "answer": "Here's the Complete Snowboard, if it's under $700."
-   }}
-
-8. If the customer asks:
-   "What is the capital of India?"
-
-   return approximately:
-
-   {{
-     "intent": "general_question",
-     "filters": {{
-    "product_name": None,
-    "product_type": None,
-    "color": None,
-    "size": None,
-    "vendor": None,
-    "max_price": None,
-    "min_price": None
-}},
-     "answer": "The capital of India is New Delhi."
-   }}
-
-9. Do not invent product information.
-
-10. Keep the answer concise and conversational.
-
-11. Return ONLY JSON. Do not use markdown code fences.
+1. Use "filter_products" when the customer is browsing for products.
+2. Extract relevant filters; set unused ones to null.
+3. "product_type" = general category (e.g. "T-Shirt", "Snowboard").
+4. "product_name" = specific named product from the catalog.
+5. Never put a specific product name into "product_type".
+6. Keep the answer concise and conversational.
+7. Return ONLY JSON. No markdown code fences.
 """
-
     try:
         response = _call_llm_with_retry(prompt)
-
-    except RateLimitError:
-        return RATE_LIMITED_RESPONSE
+    except Exception as exc:
+        # Catch RateLimitError, NotFoundError, and any other API error
+        # so the server never returns a 500 to the client.
+        print(f"LLM ask_llm error (non-fatal): {exc}")
+        if "rate" in str(exc).lower() or "429" in str(exc):
+            return RATE_LIMITED_RESPONSE
+        return FALLBACK_RESPONSE
 
     if not response.choices:
         return FALLBACK_RESPONSE
 
     content = response.choices[0].message.content
-
     if not content:
         return FALLBACK_RESPONSE
 
-    content = content.strip()
+    return _parse_json(content, FALLBACK_RESPONSE)
 
+
+# -------------------------------------------------------
+# Public entry point 2: Cart / variant selection
+# -------------------------------------------------------
+
+def ask_llm_cart(
+    message: str,
+    filtered_products: list,
+    selected_product: dict = None,
+) -> dict:
+    """
+    Interpret a follow-up message when the user is selecting a variant
+    or adding to cart.
+
+    Returns:
+      {
+        "intent": one of:
+          "select_variant"  – user specifying size/color/qty
+          "add_to_cart"     – user explicitly saying add to cart
+          "confirm_yes"     – user confirming a pre-add prompt
+          "confirm_no"      – user cancelling
+          "filter_products" – user is actually searching for new products
+          "general_question"
+        "product_ref": product title the user is referring to (or null)
+        "variant_ref": size/color/sku mentioned (or null, e.g. "M", "blue", "XL")
+        "quantity": integer (default 1),
+        "answer": short conversational response
+      }
+    """
+    product_text = _build_product_text(filtered_products)
+
+    selected_context = ""
+    if selected_product:
+        selected_context = (
+            f"\nThe customer has already shown interest in: "
+            f"{selected_product.get('title', '')}\n"
+        )
+
+    prompt = f"""
+You are an AI shopping assistant for a Shopify store helping a customer
+complete their purchase.
+{selected_context}
+Currently shown products:
+{product_text}
+
+Customer says:
+{message}
+
+Determine what the customer wants. Return ONLY valid JSON:
+
+{{
+  "intent": "<intent>",
+  "product_ref": "<product title or null>",
+  "variant_ref": "<size/color/sku or null>",
+  "quantity": <integer, default 1>,
+  "answer": "<short conversational response>"
+}}
+
+Intent values:
+- "select_variant"  – customer is specifying a size, color, quantity, or picking a product from a list
+- "add_to_cart"     – customer explicitly says "add to cart", "buy it", "add this", "I want this"
+- "confirm_yes"     – customer confirms a pending action ("yes", "that's right", "go ahead", "confirm")
+- "confirm_no"      – customer cancels ("no", "cancel", "nevermind", "go back")
+- "filter_products" – customer is searching for different/new products (start a new search)
+- "general_question"– customer is asking a question not related to selecting/buying
+
+Rules:
+- Extract the variant the customer mentions (size like "M", "Large", "XL"; color like "blue", "red")
+- Normalise sizes: "medium" → "M", "large" → "L", "small" → "S", "extra large" → "XL"
+- If the customer says "2 of them" or "add 3", set quantity accordingly
+- product_ref should be the exact product title from the shown products list, or null if unclear
+- Return ONLY JSON. No markdown code fences.
+"""
     try:
-        return json.loads(content)
+        response = _call_llm_with_retry(prompt)
+    except Exception as exc:
+        # Catch RateLimitError, NotFoundError, and any other API error
+        # so the server never returns a 500 to the client.
+        print(f"LLM ask_llm_cart error (non-fatal): {exc}")
+        rate_msg = RATE_LIMITED_RESPONSE["answer"]
+        return {**FALLBACK_CART_RESPONSE, "answer": rate_msg}
 
-    except json.JSONDecodeError:
-        # Fallback if the model doesn't return valid JSON
-        return {
-            "intent": "general_question",
-            "filters": {
-                "product_name": None,
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": content
-        }
+    if not response.choices:
+        return FALLBACK_CART_RESPONSE
+
+    content = response.choices[0].message.content
+    if not content:
+        return FALLBACK_CART_RESPONSE
+
+    result = _parse_json(content, FALLBACK_CART_RESPONSE)
+
+    # Ensure quantity is always a positive int
+    try:
+        result["quantity"] = max(1, int(result.get("quantity", 1)))
+    except (TypeError, ValueError):
+        result["quantity"] = 1
+
+    return result

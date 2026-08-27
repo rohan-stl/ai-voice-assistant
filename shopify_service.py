@@ -1,13 +1,78 @@
+"""
+shopify_service.py
+
+Fetches product catalog from the Shopify Admin GraphQL API.
+Accepts shop_domain and admin_token per call so the same backend
+can serve multiple Shopify stores without code changes.
+
+Falls back to .env values when called without explicit credentials
+(useful for local development / single-store deployments).
+"""
+
+import os
 import requests
-from shopify_auth import get_access_token, STORE_DOMAIN
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SHOPIFY_API_VERSION = "2026-07"
 
+_DEFAULT_DOMAIN = os.getenv("SHOPIFY_STORE_DOMAIN", "")
+_DEFAULT_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "")
+_DEFAULT_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")
+_DEFAULT_ADMIN_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN", "")
 
-def get_products(first=20):
-    token = get_access_token()
 
-    url = f"https://{STORE_DOMAIN}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+def _get_admin_token(shop_domain: str, client_id: str, client_secret: str) -> str:
+    """
+    Exchange client credentials for a short-lived Admin API access token.
+    This is the existing OAuth client_credentials flow.
+    """
+    url = f"https://{shop_domain}/admin/oauth/access_token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    response = requests.post(url, json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+
+def get_products(
+    first: int = 50,
+    shop_domain: str = None,
+    admin_token: str = None,
+    client_id: str = None,
+    client_secret: str = None,
+) -> list:
+    """
+    Fetch the product catalog from the Shopify Admin GraphQL API.
+
+    Multi-store usage:
+      Pass shop_domain + admin_token (a permanent token, e.g. from a
+      private/custom app install), OR shop_domain + client_id + client_secret
+      to use the existing OAuth client_credentials flow.
+
+    Single-store / local dev:
+      Leave all params as None — falls back to .env values.
+    """
+    domain = shop_domain or _DEFAULT_DOMAIN
+    if not domain:
+        raise ValueError("shop_domain is required")
+
+    # Resolve the admin token
+    if admin_token:
+        token = admin_token
+    elif client_id and client_secret:
+        token = _get_admin_token(domain, client_id, client_secret)
+    elif _DEFAULT_ADMIN_TOKEN:
+        token = _DEFAULT_ADMIN_TOKEN
+    else:
+        # Fall back to env-based OAuth flow (existing behaviour)
+        token = _get_admin_token(domain, _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET)
+
+    url = f"https://{domain}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
 
     query = """
     query GetProducts($first: Int!) {
@@ -21,7 +86,6 @@ def get_products(first=20):
                 vendor
                 status
                 totalInventory
-
                 onlineStoreUrl
 
                 featuredImage {
@@ -29,7 +93,7 @@ def get_products(first=20):
                     altText
                 }
 
-                variants(first: 10) {
+                variants(first: 20) {
                     nodes {
                         id
                         title
@@ -41,16 +105,17 @@ def get_products(first=20):
                             url
                             altText
                         }
+
+                        selectedOptions {
+                            name
+                            value
+                        }
                     }
                 }
             }
         }
     }
     """
-
-    variables = {
-        "first": first
-    }
 
     headers = {
         "Content-Type": "application/json",
@@ -59,13 +124,10 @@ def get_products(first=20):
 
     response = requests.post(
         url,
-        json={
-            "query": query,
-            "variables": variables
-        },
+        json={"query": query, "variables": {"first": first}},
         headers=headers,
+        timeout=20,
     )
-
     response.raise_for_status()
 
     data = response.json()

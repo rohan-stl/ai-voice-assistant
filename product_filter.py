@@ -165,37 +165,43 @@ def filter_products(products: list, filters: dict) -> list:
             variant_title = variant.get("title", "")
 
             # -----------------------------------------
-            # Extract color and size from variant title
-            # Example: "White / M"
+            # Extract color and size from selectedOptions
+            # (fall back to splitting title by "/" only as last resort)
             # -----------------------------------------
 
-            variant_parts = [
-                part.strip()
-                for part in variant_title.split("/")
-            ]
+            selected_opts = variant.get("selectedOptions", [])
+            variant_color = ""
+            variant_size = ""
 
-            variant_color = (
-                variant_parts[0]
-                if len(variant_parts) >= 1
-                else ""
-            )
+            for opt in selected_opts:
+                opt_name = opt.get("name", "").lower()
+                opt_val  = opt.get("value", "")
+                if opt_name in ("color", "colour"):
+                    variant_color = opt_val
+                elif opt_name == "size":
+                    variant_size = opt_val
 
-            variant_size = (
-                variant_parts[1]
-                if len(variant_parts) >= 2
-                else ""
-            )
+            # Fallback: split title "Blue / M" when selectedOptions absent
+            if not variant_color and not variant_size:
+                variant_parts = [p.strip() for p in variant_title.split("/")]
+                if len(variant_parts) >= 2:
+                    variant_color = variant_parts[0]
+                    variant_size  = variant_parts[1]
+                elif len(variant_parts) == 1:
+                    # Single-option product — leave color empty, treat as size
+                    variant_size = variant_parts[0]
 
             # -----------------------------------------
-            # Color filter (matches ANY requested color)
+            # Color filter — substring match so "dark blue" matches "blue"
             # -----------------------------------------
 
             if colors_lower:
-                if variant_color.lower() not in colors_lower:
+                vc = variant_color.lower()
+                if not any(c in vc or vc in c for c in colors_lower):
                     continue
 
             # -----------------------------------------
-            # Size filter (matches ANY requested size)
+            # Size filter — exact match (M ≠ XL)
             # -----------------------------------------
 
             if sizes_lower:
