@@ -18,6 +18,7 @@ Two entry points:
 
 import os
 import json
+import re
 import time
 from openai import OpenAI, RateLimitError
 from dotenv import load_dotenv
@@ -126,16 +127,46 @@ def _call_llm_with_retry(prompt: str):
 
 def _parse_json(content: str, fallback: dict) -> dict:
     content = content.strip()
+
     # Strip markdown code fences if present
     if content.startswith("```"):
         lines = content.splitlines()
         content = "\n".join(
             line for line in lines if not line.startswith("```")
         ).strip()
+
+    # Strategy 1: Direct JSON parse
     try:
-        return json.loads(content)
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return _sanitize_answer(data, fallback)
     except json.JSONDecodeError:
-        return {**fallback, "answer": content}
+        pass
+
+    # Strategy 2: Extract JSON block using regex (handles guardrails like "User Safety: safe\n{...}")
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict):
+                return _sanitize_answer(data, fallback)
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3: Fallback if no valid JSON found
+    clean_content = content
+    if "user safety:" in clean_content.lower() or "safety:" in clean_content.lower():
+        clean_content = fallback.get("answer", "I found matching products for you.")
+    
+    return {**fallback, "answer": clean_content}
+
+
+def _sanitize_answer(data: dict, fallback: dict) -> dict:
+    answer = str(data.get("answer", "") or "").strip()
+    if "user safety:" in answer.lower() or "safety:" in answer.lower():
+        data["answer"] = fallback.get("answer", "I found matching products for you.")
+    return data
+
 
 
 def _build_product_text(products: list) -> str:

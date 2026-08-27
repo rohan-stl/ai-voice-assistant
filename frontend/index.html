@@ -780,15 +780,7 @@ function processResponse(data, userMessage) {
   let html = stageBadge(currentStage);
   html += renderMarkdown(data.answer || "");
 
-  // Show product grid when browsing
-  if (data.products && data.products.length > 0 && currentStage === "browse") {
-    html += renderProducts(data.products, currentStage);
-  }
 
-  // Show product when a single match was found and we're in variant selection
-  if (data.products && data.products.length > 0 && currentStage === "awaiting_variant") {
-    html += renderProducts(data.products, currentStage);
-  }
 
   // Confirm card
   if (currentStage === "awaiting_confirm" && data.selected_product && data.selected_variant) {

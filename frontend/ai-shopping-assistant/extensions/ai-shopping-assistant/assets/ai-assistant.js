@@ -27,14 +27,19 @@ function renderApiResponse(data, responseBox, status) {
   if (data.cart && data.cart.lines && data.cart.lines.length > 0) {
     const lastLine = data.cart.lines[data.cart.lines.length - 1];
 
-    // ── Show a success card with checkout link ─────────────────
+    // ── Show a success card with both Store Cart & Checkout links ─
     if (lastLine) {
       const successCard = document.createElement("div");
       successCard.style.cssText = "background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:12px;";
+      const checkoutBtn = data.cart.checkout_url
+        ? `<a href="${data.cart.checkout_url}" target="_blank" style="display:inline-block;margin-top:8px;margin-right:6px;padding:8px 14px;background:#000;color:#fff;border-radius:6px;text-decoration:none;font-size:12px;">Proceed to Checkout →</a>`
+        : "";
+      const mainCartBtn = `<a href="/cart" target="_self" style="display:inline-block;margin-top:8px;padding:8px 14px;background:#166534;color:#fff;border-radius:6px;text-decoration:none;font-size:12px;">View Store Cart 🛒</a>`;
+      
       successCard.innerHTML = `
         <div style="font-weight:600;margin-bottom:4px;">🎉 Added to cart!</div>
         <div style="font-size:13px;color:#166534;">${lastLine.product_title || ""} — ${lastLine.variant_title || ""} × ${lastLine.quantity || 1}</div>
-        ${data.cart.checkout_url ? `<a href="${data.cart.checkout_url}" target="_blank" style="display:inline-block;margin-top:8px;padding:8px 14px;background:#000;color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">Proceed to Checkout →</a>` : ""}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">${mainCartBtn}${checkoutBtn}</div>
       `;
       responseBox.appendChild(successCard);
     }
@@ -52,7 +57,10 @@ function renderApiResponse(data, responseBox, status) {
         const addResp = await fetch("/cart/add.js", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-          body: JSON.stringify({ items: [{ id: numericId, quantity: lastLine.quantity || 1 }] }),
+          body: JSON.stringify({
+            items: [{ id: numericId, quantity: lastLine.quantity || 1 }],
+            sections: "cart-drawer,cart-icon-bubble"
+          }),
         });
 
         if (!addResp.ok) {
@@ -60,7 +68,37 @@ function renderApiResponse(data, responseBox, status) {
           return;
         }
 
-        // ── Refresh cart count badge in theme header ───────────
+        const addData = await addResp.json();
+
+        // ── Re-render Dawn Theme Cart Drawer HTML directly ──────────
+        if (addData.sections) {
+          if (addData.sections["cart-drawer"]) {
+            const drawer = document.querySelector("cart-drawer");
+            if (drawer) {
+              const parser = new DOMParser();
+              const parsedHtml = parser.parseFromString(addData.sections["cart-drawer"], "text/html");
+              const newDrawer = parsedHtml.querySelector("cart-drawer");
+              if (newDrawer) {
+                drawer.innerHTML = newDrawer.innerHTML;
+              }
+              drawer.classList.remove("is-empty");
+              drawer.classList.add("active");
+              if (typeof drawer.open === "function") drawer.open();
+            }
+          }
+
+          if (addData.sections["cart-icon-bubble"]) {
+            const bubble = document.querySelector("#cart-icon-bubble");
+            if (bubble) {
+              const parser = new DOMParser();
+              const parsedHtml = parser.parseFromString(addData.sections["cart-icon-bubble"], "text/html");
+              const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
+              bubble.innerHTML = newBubble ? newBubble.innerHTML : addData.sections["cart-icon-bubble"];
+            }
+          }
+        }
+
+        // ── Fallback count update & events for non-Dawn themes ──────
         const cartResp = await fetch("/cart.js");
         if (cartResp.ok) {
           const nativeCart = await cartResp.json();
@@ -72,73 +110,22 @@ function renderApiResponse(data, responseBox, status) {
             if (count > 0) el.removeAttribute("hidden");
           });
           console.log(`[AI Cart] ✅ Synced to native cart — ${count} item(s)`);
+
+          document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
+          document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
         }
       } catch (err) {
         console.warn("[AI Cart] Native cart sync skipped:", err.message);
       }
     })();
+
+
   }
 
   // =============================================================
-  // PRODUCT CARDS (browse + awaiting_variant stages)
+  // AUDIO — play TTS response, then redirect to filtered store page
   // =============================================================
-  const products = data.products || [];
-  if (products.length > 0 && (stage === "browse" || stage === "awaiting_variant")) {
-    const grid = document.createElement("div");
-    grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;";
-
-    products.forEach(product => {
-      const variants = product.variants?.nodes || [];
-      const imgUrl = variants.find(v => v.image?.url)?.image?.url || product.featuredImage?.url;
-
-      const card = document.createElement("div");
-      card.style.cssText = "border:1px solid #ddd;border-radius:10px;padding:10px;background:#fff;flex:1;min-width:130px;max-width:180px;";
-
-      if (imgUrl) {
-        const img = document.createElement("img");
-        img.src = imgUrl;
-        img.alt = product.title;
-        img.style.cssText = "width:100%;max-height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px;";
-        card.appendChild(img);
-      }
-
-      const titleEl = document.createElement("div");
-      titleEl.textContent = product.title;
-      titleEl.style.cssText = "font-weight:600;font-size:13px;margin-bottom:4px;";
-      card.appendChild(titleEl);
-
-      const seenPrices = new Set();
-      variants.slice(0, 2).forEach(v => {
-        const p = parseFloat(v.price || 0).toFixed(2);
-        if (!seenPrices.has(p)) {
-          seenPrices.add(p);
-          const prEl = document.createElement("div");
-          prEl.textContent = `$${p}`;
-          prEl.style.cssText = "font-size:12px;color:#555;";
-          card.appendChild(prEl);
-        }
-      });
-
-      const btn = document.createElement("a");
-      btn.href = product.onlineStoreUrl
-        || `https://${window.Shopify?.shop || location.hostname}/products/${product.handle}`;
-      btn.target = "_self";
-      btn.textContent = "View Product";
-      btn.style.cssText = "display:inline-block;margin-top:6px;padding:5px 10px;border-radius:5px;background:#000;color:#fff;text-decoration:none;font-size:11px;";
-      card.appendChild(btn);
-      grid.appendChild(card);
-    });
-    responseBox.appendChild(grid);
-  }
-
-  // =============================================================
-  // AUDIO — play TTS, then redirect ONLY when browsing with no
-  // product cards to show and no cart action in progress
-  // =============================================================
-  const shouldRedirect = !!data.storefront_url
-    && stage === "browse"
-    && products.length === 0
-    && !data.cart;
+  const shouldRedirect = !!data.storefront_url && !data.cart;
 
   if (data.audio) {
     try {
@@ -152,7 +139,7 @@ function renderApiResponse(data, responseBox, status) {
       audio.onplay  = () => { status.textContent = "Playing response..."; };
       audio.onended = () => {
         URL.revokeObjectURL(blobUrl);
-        status.textContent = shouldRedirect ? "Opening filtered products..." : "Tap the microphone to speak";
+        status.textContent = shouldRedirect ? "Opening filtered store page..." : "Tap the microphone to speak";
         if (shouldRedirect) window.location.href = data.storefront_url;
       };
       audio.onerror = () => {
@@ -179,6 +166,7 @@ function renderApiResponse(data, responseBox, status) {
   }
 
 } // end renderApiResponse
+
 
 
 // ===============================================================
