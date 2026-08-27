@@ -11,7 +11,7 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
-MODEL_NAME = "openai/gpt-oss-20b:free"
+MODEL_NAME = "openrouter/free"
 
 MAX_RETRIES = 3
 
