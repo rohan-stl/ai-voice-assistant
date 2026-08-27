@@ -1,9 +1,22 @@
-const API_BASE_URL =
-  "https://garry-percental-overpositively.ngrok-free.dev";
+// ===============================================================
+// API URL — uses Shopify App Proxy (relative, no hardcoded URL)
+// Override: set window.AI_ASSISTANT_API_BASE before this script
+// ===============================================================
+
+function getApiBaseUrl() {
+  if (window.AI_ASSISTANT_API_BASE) {
+    return window.AI_ASSISTANT_API_BASE.trim().replace(/\/$/, "");
+  }
+  // Shopify App Proxy route — Shopify forwards this to the backend
+  return "/apps/ai-assistant";
+}
+
+
 
 // ===============================================================
 // SHARED: RENDER API RESPONSE (used by both voice + text input)
 // ===============================================================
+
 
 function renderApiResponse(data, responseBox, status) {
   console.log("API response:", data);
@@ -239,11 +252,12 @@ function initAiAssistantButton(button) {
         formData.append("file", audioBlob, "voice.webm");
 
         try {
-          const response = await fetch(`${API_BASE_URL}/voice`, {
+          const apiBase = getApiBaseUrl();
+          const response = await fetch(`${apiBase}/voice`, {
             method: "POST",
-            headers: { "ngrok-skip-browser-warning": "1" },
             body: formData,
           });
+
 
           if (!response.ok) throw new Error(`Server returned ${response.status}`);
 

@@ -195,6 +195,7 @@
 <div
   class="ai-shopping-assistant"
   id="ai-shopping-assistant-{{ block.id }}"
+  data-api-base="{{ block.settings.api_base_url }}"
 >
   <div class="ai-assistant-mic-wrap">
     <div class="ai-wave" aria-hidden="true">
@@ -241,6 +242,15 @@
 {
   "name": "AI Shopping Assistant",
   "target": "section",
-  "settings": []
+  "settings": [
+    {
+      "type": "text",
+      "id": "api_base_url",
+      "label": "AI Backend API Base URL",
+      "default": "/apps/ai-assistant",
+      "info": "App Proxy path or backend endpoint"
+
+    }
+  ]
 }
 {% endschema %}

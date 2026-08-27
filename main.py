@@ -610,6 +610,7 @@ def products_endpoint(
 
 
 @app.post("/voice-text")
+@app.post("/apps/ai-assistant/voice-text")
 def voice_text(request: TextRequest):
     shop_domain  = _resolve_domain(request.shop_domain)
     admin_token  = _resolve_admin_token(request.admin_token)
@@ -623,7 +624,9 @@ def voice_text(request: TextRequest):
 
 
 @app.post("/voice")
+@app.post("/apps/ai-assistant/voice")
 async def voice(
+
     file: UploadFile = File(...),
     session_id: str = Form("default"),
     shop_domain: str = Form(None),
