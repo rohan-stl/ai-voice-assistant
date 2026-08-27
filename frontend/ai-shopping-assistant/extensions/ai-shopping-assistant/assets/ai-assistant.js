@@ -97,6 +97,24 @@ function renderApiResponse(data, responseBox, status) {
               drawer.classList.remove("is-empty");
               drawer.classList.add("active");
               if (typeof drawer.open === "function") drawer.open();
+
+              // ── Auto-click checkout after 3.5 seconds ───────────────
+              setTimeout(() => {
+                // Try clicking the native checkout button inside the drawer
+                const checkoutBtn =
+                  drawer.querySelector("a[href*='/checkouts'], a[href*='checkout']") ||
+                  document.querySelector("cart-drawer a[href*='checkout']") ||
+                  document.querySelector(".cart__checkout-button, #checkout, [name='checkout']");
+
+                if (checkoutBtn) {
+                  console.log("[AI Cart] ⏱️ Auto-clicking checkout button…");
+                  checkoutBtn.click();
+                } else {
+                  // Fallback: navigate directly to /checkout
+                  console.log("[AI Cart] ⏱️ Auto-redirecting to /checkout…");
+                  window.location.href = "/checkout";
+                }
+              }, 3500);
             }
           }
 
@@ -110,6 +128,7 @@ function renderApiResponse(data, responseBox, status) {
             }
           }
         }
+
 
         // ── Fallback count update & events for non-Dawn themes ──────
         const cartResp = await fetch("/cart.js");
