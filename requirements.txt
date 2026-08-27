@@ -5,3 +5,7 @@ python-dotenv
 openai
 elevenlabs
 python-multipart
+faster-whisper
+groq
+edge-tts
+pyttsx3

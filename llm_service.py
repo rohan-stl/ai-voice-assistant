@@ -1,26 +1,93 @@
 import os
 import json
-from openai import OpenAI
+import time
 from dotenv import load_dotenv
+from llm_provider import GroqLLMProvider, OpenRouterLLMProvider
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
+LLM_PROVIDER_NAME = os.getenv("LLM_PROVIDER", "groq")
+
+
+def _create_llm_provider():
+    if LLM_PROVIDER_NAME == "groq":
+        return GroqLLMProvider(api_key=os.getenv("GROQ_API_KEY", ""))
+    elif LLM_PROVIDER_NAME == "openrouter":
+        return OpenRouterLLMProvider(api_key=os.getenv("OPENROUTER_API_KEY", ""))
+    else:
+        raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER_NAME}")
+
+
+# Singleton initialized once at module load
+_llm = _create_llm_provider()
+
+MAX_RETRIES = 3
+MAX_RETRY_WAIT_SECONDS = 30
+
+FALLBACK_RESPONSE = {
+    "intent": "general_question",
+    "filters": {
+        "product_name": None,
+        "product_type": None,
+        "color": None,
+        "size": None,
+        "vendor": None,
+        "max_price": None,
+        "min_price": None
+    },
+    "answer": "I didn't understand that. Please try again."
+}
+
+RATE_LIMITED_RESPONSE = {
+    "intent": "general_question",
+    "filters": {
+        "product_name": None,
+        "product_type": None,
+        "color": None,
+        "size": None,
+        "vendor": None,
+        "max_price": None,
+        "min_price": None
+    },
+    "answer": (
+        "I'm getting a lot of requests right now — "
+        "please try again in a few seconds."
+    )
+}
+
+
+def _call_llm_with_retry(prompt: str) -> str:
+    """
+    Calls the LLM provider, retrying on generic Exceptions with simple backoff.
+    """
+    last_error = None
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            return _llm.chat(prompt)
+        except Exception as error:
+            last_error = error
+            # Simple exponential backoff
+            wait_seconds = min(2 ** attempt, MAX_RETRY_WAIT_SECONDS)
+            is_last_attempt = attempt == MAX_RETRIES - 1
+
+            print(
+                f"LLM request failed (attempt {attempt + 1}/{MAX_RETRIES}). "
+                f"{'Giving up.' if is_last_attempt else f'Retrying in {wait_seconds}s...'}. "
+                f"Error: {error}"
+            )
+
+            if not is_last_attempt:
+                time.sleep(wait_seconds)
+
+    raise last_error
 
 
 def ask_llm(message: str, products: list) -> dict:
-    print("[LLM] Request received")
-    print("[LLM] Customer message:", message)
-    print("[LLM] Product count:", len(products))
-
     product_text = []
 
     for product in products:
         variants = product.get("variants", {}).get("nodes", [])
-
         variant_text = []
 
         for variant in variants:
@@ -56,54 +123,66 @@ Customer request:
 Available products:
 {product_text}
 
-Your job is to determine whether the customer is asking to:
-- filter/find products,
-- open a specific product,
-- open a specific collection/category, or
-- ask for clarification about a shopping request.
-
-You are not a general-purpose assistant.
-Do not answer unrelated factual questions.
-If the utterance is off-topic, unclear, or likely a speech-to-text mistake,
-ask the user to clarify what product or collection they want.
+Your job is to understand the customer's request and determine whether
+they are asking to filter/find products or asking a general question.
 
 Return ONLY valid JSON.
 
 The JSON must have exactly this structure:
 
 {{
-  "intent": "filter_products" or "product_request" or "collection_request" or "clarification_needed",
-  "navigation_target": {{
-    "type": "product" or "collection" or null,
-    "query": "the product or collection name from the user" or null
-  }},
+  "intent": "filter_products" or "general_question",
   "filters": {{
+    "product_name": null,
     "product_type": null,
     "color": null,
     "size": null,
     "vendor": null,
     "max_price": null,
     "min_price": null
-  }},
+}},
   "answer": "short conversational response"
 }}
 
 Rules:
 
-1. If the customer is looking for products by attributes, use:
+1. If the customer is looking for products, use:
    "intent": "filter_products"
 
-2. If the customer wants a specific product, use:
-   "intent": "product_request"
-   and set navigation_target.type to "product"
+2. Extract product filters from the customer's request.
 
-3. If the customer wants a collection/category, use:
-   "intent": "collection_request"
-   and set navigation_target.type to "collection"
+3. Possible filters include:
+   - product_name
+   - product_type
+   - color
+   - size
+   - vendor
+   - max_price
+   - min_price
 
 4. If a filter was not specified, set it to null.
 
-5. Do NOT invent filters or navigation targets.
+5. Do NOT invent filters.
+
+5a. Always spell "product_type" for T-shirts exactly as "T-Shirt"
+    (capital T, capital S), matching how it appears in the product
+    catalog above. Use this exact casing consistently, never
+    "T-shirt" or "t-shirt".
+
+5b. "product_name" vs "product_type" — these are different things:
+    - "product_type" is a general category (e.g. "Snowboard", "T-Shirt")
+      and should be used when the customer describes what KIND of thing
+      they want.
+    - "product_name" is one specific, named product taken from the
+      catalog above (e.g. "The Complete Snowboard", "Classic T-Shirt")
+      and should be used when the customer refers to a particular
+      product by name, even loosely (e.g. "the complete snowboard",
+      "the archived one", "that classic tee").
+    When the customer names a specific product, set "product_name" to
+    that product's exact title as it appears in the catalog above, and
+    leave "product_type" null unless the customer ALSO separately
+    mentions a general category. Never put a specific product's name
+    into "product_type".
 
 6. If the customer says:
    "Show me blue T-shirts"
@@ -112,12 +191,9 @@ Rules:
 
    {{
      "intent": "filter_products",
-     "navigation_target": {{
-       "type": null,
-       "query": null
-     }},
      "filters": {{
-       "product_type": "T-shirt",
+       "product_name": null,
+       "product_type": "T-Shirt",
        "color": "blue",
        "vendor": null,
        "max_price": null,
@@ -133,12 +209,9 @@ Rules:
 
    {{
      "intent": "filter_products",
-     "navigation_target": {{
-       "type": null,
-       "query": null
-     }},
      "filters": {{
-       "product_type": "T-shirt",
+       "product_name": null,
+       "product_type": "T-Shirt",
        "color": "blue",
        "vendor": "Nike",
        "max_price": 40,
@@ -147,39 +220,35 @@ Rules:
      "answer": "Here are the Nike blue T-shirts under $40."
    }}
 
-8. If the customer says:
-   "Show me the available t-shirts"
+If the customer says:
+   "Show me blue T-shirts of size Medium"
 
    return approximately:
 
    {{
-     "intent": "collection_request",
-     "navigation_target": {{
-       "type": "collection",
-       "query": "t-shirts"
-     }},
+     "intent": "filter_products",
      "filters": {{
-       "product_type": "T-shirt",
-       "color": null,
-       "size": null,
+       "product_name": null,
+       "product_type": "T-Shirt",
+       "color": "blue",
+       "size": "M",
        "vendor": null,
        "max_price": null,
        "min_price": null
      }},
-     "answer": "Here are the T-shirts I found."
+     "answer": "Here are the blue medium T-shirts I found."
    }}
 
-9. If the customer says something unrelated to shopping,
-   such as an academic, news, or general knowledge question,
-   return:
+7a. If the customer says:
+   "Show me the complete snowboard"
+
+   and the catalog above contains a product titled "The Complete
+   Snowboard", return approximately:
 
    {{
-     "intent": "clarification_needed",
-     "navigation_target": {{
-       "type": null,
-       "query": null
-     }},
+     "intent": "filter_products",
      "filters": {{
+       "product_name": "The Complete Snowboard",
        "product_type": null,
        "color": null,
        "size": null,
@@ -187,102 +256,73 @@ Rules:
        "max_price": null,
        "min_price": null
      }},
-     "answer": "I can help with products in this store. If you meant a product, collection, color, size, or price, please say that again."
+     "answer": "Here's the Complete Snowboard."
    }}
 
-10. Do not invent product information.
+7b. If the customer says:
+   "Show me the complete snowboard under $700"
 
-11. Keep the answer concise and conversational.
+   return approximately:
 
-12. Return ONLY JSON. Do not use markdown code fences.
+   {{
+     "intent": "filter_products",
+     "filters": {{
+       "product_name": "The Complete Snowboard",
+       "product_type": null,
+       "color": null,
+       "size": null,
+       "vendor": null,
+       "max_price": 700,
+       "min_price": null
+     }},
+     "answer": "Here's the Complete Snowboard, if it's under $700."
+   }}
+
+8. If the customer asks:
+   "What is the capital of India?"
+
+   return approximately:
+
+   {{
+     "intent": "general_question",
+     "filters": {{
+        "product_name": null,
+        "product_type": null,
+        "color": null,
+        "size": null,
+        "vendor": null,
+        "max_price": null,
+        "min_price": null
+     }},
+     "answer": "The capital of India is New Delhi."
+   }}
+
+9. Do not invent product information.
+
+10. Keep the answer concise and conversational.
+
+11. Return ONLY JSON. Do not use markdown code fences.
 """
 
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-20b:free",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
-
-    print("[LLM] Response object received")
-
-    if not response.choices:
-        print("[LLM] No choices returned")
-        return {
-            "intent": "clarification_needed",
-            "navigation_target": {
-                "type": None,
-                "query": None
-            },
-            "filters": {
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": "I can help with products in this store. Please tell me what item, collection, color, size, or price you want."
-        }
-
-    content = response.choices[0].message.content
-
-    print("[LLM] Raw content:", content)
+    try:
+        content = _call_llm_with_retry(prompt)
+    except Exception:
+        # Fallback response if retry attempts are exhausted or rate-limited
+        return FALLBACK_RESPONSE
 
     if not content:
-        print("[LLM] Empty content returned")
-        return {
-            "intent": "clarification_needed",
-            "navigation_target": {
-                "type": None,
-                "query": None
-            },
-            "filters": {
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": "I can help with products in this store. Please tell me what item, collection, color, size, or price you want."
-        }
+        return FALLBACK_RESPONSE
 
     content = content.strip()
 
     try:
-        parsed = json.loads(content)
-        print("[LLM] Parsed JSON:", parsed)
-
-        if "navigation_target" not in parsed:
-            parsed["navigation_target"] = {
-                "type": None,
-                "query": None
-            }
-
-        if parsed.get("intent") == "general_question":
-            parsed["intent"] = "clarification_needed"
-            parsed["answer"] = (
-                "I can help with products in this store. "
-                "If you meant a product, collection, color, size, or price, "
-                "please say that again."
-            )
-
-        return parsed
-
+        return json.loads(content)
     except json.JSONDecodeError:
-        print("[LLM] Failed to parse JSON, using fallback")
-        # Fallback if the model doesn't return valid JSON
+        # Fallback if the model response isn't formatted as valid JSON
         return {
-            "intent": "clarification_needed",
-            "navigation_target": {
-                "type": None,
-                "query": None
-            },
+            "intent": "general_question",
             "filters": {
+                "product_name": None,
                 "product_type": None,
                 "color": None,
                 "size": None,
@@ -290,9 +330,5 @@ Rules:
                 "max_price": None,
                 "min_price": None
             },
-            "answer": (
-                "I can help with products in this store. "
-                "If you meant a product, collection, color, size, or price, "
-                "please say that again."
-            )
+            "answer": content
         }
