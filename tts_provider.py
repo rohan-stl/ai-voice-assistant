@@ -1,5 +1,6 @@
 import os
 import asyncio
+import concurrent.futures
 from abc import ABC, abstractmethod
 
 class TTSProvider(ABC):
@@ -19,13 +20,27 @@ class EdgeTTSProvider(TTSProvider):
     
     def synthesize(self, text: str, output_path: str) -> str:
         import edge_tts
-        print(f"Edge TTS generating audio for: '{text}' using voice {self.voice}")
-        
+
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("TTS received empty text")
+
+        print(f"[TTS] Edge TTS generating ({len(text)} chars) voice={self.voice}")
+
         async def _generate():
             communicate = edge_tts.Communicate(text, self.voice)
             await communicate.save(output_path)
-        
-        asyncio.run(_generate())
+
+        # asyncio.run() fails inside an active event loop — run in a thread instead
+        def _run_in_thread():
+            asyncio.run(_generate())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_run_in_thread).result(timeout=60)
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 100:
+            raise RuntimeError("Edge TTS produced empty or missing audio file")
+
         return output_path
 
 

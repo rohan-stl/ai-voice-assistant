@@ -4,14 +4,18 @@ from shopify_auth import get_access_token, STORE_DOMAIN
 SHOPIFY_API_VERSION = "2026-07"
 
 
-def get_products(first=20):
+def get_products(first=100, query_str: str = None):
+    """
+    Fetch products from Shopify GraphQL API.
+    Supports dynamic query filtering (e.g., query_str='status:active', 'vendor:Nike', 'tag:snowboard').
+    """
     token = get_access_token()
 
     url = f"https://{STORE_DOMAIN}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
 
     query = """
-    query GetProducts($first: Int!) {
-        products(first: $first) {
+    query GetProducts($first: Int!, $query: String) {
+        products(first: $first, query: $query) {
             nodes {
                 id
                 title
@@ -44,7 +48,8 @@ def get_products(first=20):
     """
 
     variables = {
-        "first": first
+        "first": first,
+        "query": query_str
     }
 
     headers = {

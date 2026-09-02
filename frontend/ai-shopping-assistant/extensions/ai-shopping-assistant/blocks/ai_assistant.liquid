@@ -1,3 +1,8 @@
+{% if block.settings.api_base_url != blank %}
+<script>
+  window.AI_ASSISTANT_API_BASE = "{{ block.settings.api_base_url }}";
+</script>
+{% endif %}
 <script src="{{ 'ai-assistant.js' | asset_url }}" defer></script>
 
 <style>
@@ -241,6 +246,13 @@
 {
   "name": "AI Shopping Assistant",
   "target": "section",
-  "settings": []
+  "settings": [
+    {
+      "type": "text",
+      "id": "api_base_url",
+      "label": "Custom Backend API URL (Optional)",
+      "info": "Example: https://your-tunnel.trycloudflare.com (Leave blank to use default Shopify App Proxy)"
+    }
+  ]
 }
 {% endschema %}

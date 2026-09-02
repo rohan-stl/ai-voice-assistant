@@ -1,11 +1,30 @@
+# Core
 fastapi
 uvicorn
 requests
 python-dotenv
-openai
-elevenlabs
 python-multipart
+pydantic
+
+# STT — Local Whisper (primary, $0, runs on CPU)
 faster-whisper
+
+# STT — Groq Whisper (cloud fallback, free tier: 28,800 audio sec/day)
+# LLM — Groq qwen/qwen3.8-27b (primary, free tier)
 groq
+
+# TTS — Microsoft Edge TTS (primary, $0, no API key required)
 edge-tts
+
+# TTS — Offline fallback (lower quality)
 pyttsx3
+
+# LLM — OpenRouter (legacy fallback)
+openai
+
+# === Legacy / Optional ===
+# Uncomment if you switch STT_PROVIDER or TTS_PROVIDER to "elevenlabs"
+# elevenlabs
+
+
+

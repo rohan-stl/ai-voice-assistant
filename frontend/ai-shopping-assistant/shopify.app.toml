@@ -2,12 +2,11 @@
 
 client_id = "64250f16378df9cbc2ac2fe547c838f7"
 name = "AI Shopping Assistant"
-application_url = "https://example.com"
+application_url = "https://recruitment-tutorial-enabling-sufficiently.trycloudflare.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -20,3 +19,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [ ]
+
+[app_proxy]
+# Patched automatically by start.sh with the live Cloudflare tunnel URL.
+url = "https://recruitment-tutorial-enabling-sufficiently.trycloudflare.com"
+subpath = "ai-assistant"
+prefix = "apps"

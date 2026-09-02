@@ -1,6 +1,8 @@
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 import re
 
+from product_filter import normalize_filters, align_filters_for_url, _as_list
+
 
 SHOPIFY_STORE_URL = "https://bhavin-ai-shopping-assistant-demo.myshopify.com"
 
@@ -210,124 +212,53 @@ def _variant_search_score(variant: dict, query: str) -> int:
     return score
 
 
-def canonicalize_filters(filters: dict, products: list) -> dict:
-    canonical = dict(filters or {})
-
-    if not products:
-        return canonical
-
-    product_type = canonical.get("product_type")
-    vendor = canonical.get("vendor")
-    color = canonical.get("color")
-    size = canonical.get("size")
-
-    matched_product = None
-
-    for product in products:
-        actual_product_type = product.get("productType", "")
-        actual_vendor = product.get("vendor", "")
-
-        if product_type and not _normalize(product_type) in _normalize(actual_product_type):
-            continue
-
-        if vendor and not _normalize(vendor) in _normalize(actual_vendor):
-            continue
-
-        matched_product = product
-        break
-
-    if matched_product:
-        if matched_product.get("productType"):
-            canonical["product_type"] = matched_product.get("productType")
-
-        if matched_product.get("vendor"):
-            canonical["vendor"] = matched_product.get("vendor")
-
-        variants = matched_product.get("variants", {}).get("nodes", [])
-    else:
-        variants = []
-        for product in products:
-            variants.extend(product.get("variants", {}).get("nodes", []))
-
-    matched_variant = None
-
-    for variant in variants:
-        variant_color, variant_size = _extract_variant_parts(variant.get("title", ""))
-
-        if color and (
-            not variant_color
-            or _normalize(color) not in _normalize(variant_color)
-        ):
-            continue
-
-        if size and (
-            not variant_size
-            or _normalize(size) not in _normalize(variant_size)
-        ):
-            continue
-
-        matched_variant = variant
-        break
-
-    if matched_variant:
-        variant_color, variant_size = _extract_variant_parts(
-            matched_variant.get("title", "")
-        )
-
-        if color and variant_color:
-            canonical["color"] = variant_color
-
-        if size and variant_size:
-            canonical["size"] = variant_size
-
-    return canonical
-
-
-def build_storefront_url(filters: dict) -> str:
+def build_storefront_url(filters: dict) -> str | None:
+    """Build Shopify collection/search URL from filters (mustali_dev semantics)."""
     params = {}
 
-    product_type = filters.get("product_type")
-    color = filters.get("color")
-    size = filters.get("size")
-    vendor = filters.get("vendor")
+    product_names = _as_list(filters.get("product_name"))
+    product_types = _as_list(filters.get("product_type"))
+    colors = _as_list(filters.get("color"))
+    sizes = _as_list(filters.get("size"))
+    vendors = _as_list(filters.get("vendor"))
     max_price = filters.get("max_price")
     min_price = filters.get("min_price")
 
-    # Product type
-    if product_type:
-        params["filter.p.product_type"] = product_type
+    use_search_endpoint = bool(product_names)
 
-    # Color
-    if color:
-        params["filter.v.option.color"] = color.title()
+    if product_names:
+        params["q"] = " ".join(product_names)
+        params["type"] = "product"
 
-    # Size
-    if size:
-        params["filter.v.option.size"] = size.upper()
+    if product_types:
+        params["filter.p.product_type"] = product_types
 
-    # Vendor
-    if vendor:
-        params["filter.p.vendor"] = vendor
+    if colors:
+        params["filter.v.option.color"] = [c.title() for c in colors]
 
-    # Price
+    if sizes:
+        params["filter.v.option.size"] = [s.upper() for s in sizes]
+
+    if vendors:
+        params["filter.p.vendor"] = vendors
+
     if min_price is not None:
         params["filter.v.price.gte"] = min_price
     elif max_price is not None:
-        # Shopify's UI uses 0 as the lower bound
         params["filter.v.price.gte"] = 0
 
     if max_price is not None:
         params["filter.v.price.lte"] = max_price
 
     if not params:
-        return f"{SHOPIFY_STORE_URL}/collections/all"
+        return None
 
-    # Keep the collection sorted consistently
     params["sort_by"] = "title-ascending"
+    base_path = "/search" if use_search_endpoint else "/collections/all"
 
     return (
-        f"{SHOPIFY_STORE_URL}/collections/all?"
-        f"{urlencode(params)}"
+        f"{SHOPIFY_STORE_URL}{base_path}?"
+        f"{urlencode(params, doseq=True)}"
     )
 
 
@@ -441,11 +372,9 @@ def build_destination_url(
         return None
 
     if result.get("intent") == "filter_products":
-        canonical_filters = canonicalize_filters(
-            filters,
-            filtered_products or products
-        )
-
-        return build_storefront_url(canonical_filters)
+        matched = filtered_products or products
+        url_filters = align_filters_for_url(filters, matched)
+        normalized = normalize_filters(url_filters, products)
+        return build_storefront_url(normalized)
 
     return None

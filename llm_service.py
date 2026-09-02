@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from dotenv import load_dotenv
 from llm_provider import GroqLLMProvider, OpenRouterLLMProvider
 
@@ -83,53 +84,34 @@ def _call_llm_with_retry(prompt: str) -> str:
     raise last_error
 
 
-def ask_llm(message: str, products: list) -> dict:
-    product_text = []
-
-    for product in products:
+def _compact_product_catalog(products: list, limit: int = 40) -> str:
+    """Build a token-efficient product summary for the LLM prompt."""
+    lines = []
+    for product in products[:limit]:
         variants = product.get("variants", {}).get("nodes", [])
-        variant_text = []
-
-        for variant in variants:
-            variant_text.append(
-                f"Variant: {variant.get('title', '')}, "
-                f"Price: ${variant.get('price', '')}, "
-                f"Available: {variant.get('availableForSale', False)}, "
-                f"Inventory: {variant.get('inventoryQuantity', 0)}"
-            )
-
-        product_text.append(
-            f"""
-Product: {product.get('title', '')}
-Product Type: {product.get('productType', '')}
-Description: {product.get('description', '')}
-Vendor: {product.get('vendor', '')}
-Status: {product.get('status', '')}
-Total Inventory: {product.get('totalInventory', 0)}
-Product URL: {product.get('onlineStoreUrl', '')}
-Variants:
-{" | ".join(variant_text)}
-"""
+        prices = [float(v.get("price", 0) or 0) for v in variants if v.get("price")]
+        price_range = f"${min(prices):.0f}-${max(prices):.0f}" if prices else "N/A"
+        colors_sizes = ", ".join(
+            v.get("title", "") for v in variants[:4]
         )
+        lines.append(
+            f"- {product.get('title', '')} | type={product.get('productType', '')} "
+            f"| vendor={product.get('vendor', '')} | {price_range} | variants: {colors_sizes}"
+        )
+    return "\n".join(lines)
 
-    product_text = "\n".join(product_text)
 
-    prompt = f"""
-You are an AI shopping assistant for a Shopify store.
+def ask_llm(message: str, products: list) -> dict:
+    product_text = _compact_product_catalog(products)
 
-Customer request:
-{message}
+    prompt = f"""You are an AI shopping assistant for a Shopify store.
 
-Available products:
+Customer request: {message}
+
+Product catalog ({min(len(products), 40)} items):
 {product_text}
 
-Your job is to understand the customer's request and determine whether
-they are asking to filter/find products or asking a general question.
-
-Return ONLY valid JSON.
-
-The JSON must have exactly this structure:
-
+Return ONLY valid JSON with this exact structure:
 {{
   "intent": "filter_products" or "general_question",
   "filters": {{
@@ -140,174 +122,24 @@ The JSON must have exactly this structure:
     "vendor": null,
     "max_price": null,
     "min_price": null
-}},
-  "answer": "short conversational response"
+  }},
+  "answer": "short conversational response (max 2 sentences)"
 }}
 
 Rules:
-
-1. If the customer is looking for products, use:
-   "intent": "filter_products"
-
-2. Extract product filters from the customer's request.
-
-3. Possible filters include:
-   - product_name
-   - product_type
-   - color
-   - size
-   - vendor
-   - max_price
-   - min_price
-
-4. If a filter was not specified, set it to null.
-
-5. Do NOT invent filters.
-
-5a. Always spell "product_type" for T-shirts exactly as "T-Shirt"
-    (capital T, capital S), matching how it appears in the product
-    catalog above. Use this exact casing consistently, never
-    "T-shirt" or "t-shirt".
-
-5b. "product_name" vs "product_type" — these are different things:
-    - "product_type" is a general category (e.g. "Snowboard", "T-Shirt")
-      and should be used when the customer describes what KIND of thing
-      they want.
-    - "product_name" is one specific, named product taken from the
-      catalog above (e.g. "The Complete Snowboard", "Classic T-Shirt")
-      and should be used when the customer refers to a particular
-      product by name, even loosely (e.g. "the complete snowboard",
-      "the archived one", "that classic tee").
-    When the customer names a specific product, set "product_name" to
-    that product's exact title as it appears in the catalog above, and
-    leave "product_type" null unless the customer ALSO separately
-    mentions a general category. Never put a specific product's name
-    into "product_type".
-
-6. If the customer says:
-   "Show me blue T-shirts"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here are the blue T-shirts I found."
-   }}
-
-7. If the customer says:
-   "Show me Nike blue T-shirts under $40"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "vendor": "Nike",
-       "max_price": 40,
-       "min_price": null
-     }},
-     "answer": "Here are the Nike blue T-shirts under $40."
-   }}
-
-If the customer says:
-   "Show me blue T-shirts of size Medium"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": null,
-       "product_type": "T-Shirt",
-       "color": "blue",
-       "size": "M",
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here are the blue medium T-shirts I found."
-   }}
-
-7a. If the customer says:
-   "Show me the complete snowboard"
-
-   and the catalog above contains a product titled "The Complete
-   Snowboard", return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": "The Complete Snowboard",
-       "product_type": null,
-       "color": null,
-       "size": null,
-       "vendor": null,
-       "max_price": null,
-       "min_price": null
-     }},
-     "answer": "Here's the Complete Snowboard."
-   }}
-
-7b. If the customer says:
-   "Show me the complete snowboard under $700"
-
-   return approximately:
-
-   {{
-     "intent": "filter_products",
-     "filters": {{
-       "product_name": "The Complete Snowboard",
-       "product_type": null,
-       "color": null,
-       "size": null,
-       "vendor": null,
-       "max_price": 700,
-       "min_price": null
-     }},
-     "answer": "Here's the Complete Snowboard, if it's under $700."
-   }}
-
-8. If the customer asks:
-   "What is the capital of India?"
-
-   return approximately:
-
-   {{
-     "intent": "general_question",
-     "filters": {{
-        "product_name": null,
-        "product_type": null,
-        "color": null,
-        "size": null,
-        "vendor": null,
-        "max_price": null,
-        "min_price": null
-     }},
-     "answer": "The capital of India is New Delhi."
-   }}
-
-9. Do not invent product information.
-
-10. Keep the answer concise and conversational.
-
-11. Return ONLY JSON. Do not use markdown code fences.
-"""
+1. Shopping requests → "intent": "filter_products"
+2. Off-topic questions → "intent": "general_question"
+3. Use exact product titles from the catalog for "product_name"
+4. Use exact product_type casing from catalog (e.g. "T-Shirt", "Snowboard")
+5. "product_name" = specific product; "product_type" = category
+6. Unspecified filters = null. Do NOT invent filters or products.
+7. Set "vendor" only if the customer explicitly mentions a brand or vendor name.
+8. Keep "answer" concise — it will be spoken aloud.
+9. Return ONLY JSON, no markdown fences."""
 
     try:
         content = _call_llm_with_retry(prompt)
     except Exception:
-        # Fallback response if retry attempts are exhausted or rate-limited
         return FALLBACK_RESPONSE
 
     if not content:
@@ -315,20 +147,48 @@ If the customer says:
 
     content = content.strip()
 
+    # 1. Strip markdown code fences if present (e.g. ```json ... ```)
+    cleaned_content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.MULTILINE)
+    cleaned_content = re.sub(r"\s*```$", "", cleaned_content, flags=re.MULTILINE).strip()
+
+    # 2. Extract JSON object using regex if the model surrounded it with text/thinking
+    json_match = re.search(r"(\{.*\})", cleaned_content, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1).strip()
+        try:
+            parsed = json.loads(json_str)
+            if isinstance(parsed, dict) and "answer" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Direct JSON load attempt
     try:
-        return json.loads(content)
+        parsed = json.loads(cleaned_content)
+        if isinstance(parsed, dict) and "answer" in parsed:
+            return parsed
     except json.JSONDecodeError:
-        # Fallback if the model response isn't formatted as valid JSON
-        return {
-            "intent": "general_question",
-            "filters": {
-                "product_name": None,
-                "product_type": None,
-                "color": None,
-                "size": None,
-                "vendor": None,
-                "max_price": None,
-                "min_price": None
-            },
-            "answer": content
-        }
+        pass
+
+    # 4. Clean fallback if parsing failed: strip all markdown/tags so TTS gets only clean text
+    clean_text = re.sub(r"<(think|thought)>.*?</\1>", "", content, flags=re.DOTALL)
+    clean_text = re.sub(r"<(think|thought)>.*$", "", clean_text, flags=re.DOTALL)
+    clean_text = re.sub(r"```.*?```", "", clean_text, flags=re.DOTALL)
+    clean_text = re.sub(r"[\{\}\[\]\"]", "", clean_text).strip()
+    
+    if not clean_text or len(clean_text) > 200:
+        clean_text = "Here are the products matching your request."
+
+    return {
+        "intent": "general_question",
+        "filters": {
+            "product_name": None,
+            "product_type": None,
+            "color": None,
+            "size": None,
+            "vendor": None,
+            "max_price": None,
+            "min_price": None
+        },
+        "answer": clean_text
+    }

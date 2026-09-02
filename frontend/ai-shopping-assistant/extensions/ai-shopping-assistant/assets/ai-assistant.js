@@ -1,6 +1,14 @@
-// API_BASE_URL is set automatically by start.sh when the Cloudflare Tunnel starts.
-// Do not edit this URL manually — run ./start.sh and it will be patched for you.
-const API_BASE_URL = "https://disclaimers-bubble-currency-auto.trycloudflare.com";
+// Live Cloudflare Tunnel URL (auto-patched by start.sh on launch)
+const CLOUDFLARE_TUNNEL_URL = "https://recruitment-tutorial-enabling-sufficiently.trycloudflare.com";
+const MY_BACKEND_PROXY_BASE = "/apps/ai-assistant";
+
+function getApiBaseUrl() {
+  if (window.AI_ASSISTANT_API_BASE) {
+    return window.AI_ASSISTANT_API_BASE.trim().replace(/\/$/, "");
+  }
+  // Prefer direct Cloudflare Tunnel URL when active, fallback to Shopify App Proxy
+  return CLOUDFLARE_TUNNEL_URL || MY_BACKEND_PROXY_BASE;
+}
 
 // ===============================================================
 // SHARED: RENDER API RESPONSE (used by both voice + text input)
@@ -395,8 +403,9 @@ document.addEventListener("DOMContentLoaded", () => {
               // CALL VOICE API
               // =================================================
 
+              const apiBase = getApiBaseUrl();
               const response = await fetch(
-                `${API_BASE_URL}/voice`,
+                `${apiBase}/voice`,
                 {
                   method: "POST",
                   body: formData
