@@ -688,7 +688,7 @@ def _handle_awaiting_variant(
 
     # Check if required options (like Size or Color) are missing in user request
     is_complete, missing_opt_name, missing_vals = _check_missing_options(product, full_options_text)
-    if not is_complete and missing_opt_name and not go_to_checkout:
+    if not is_complete and missing_opt_name:
         state.selected_product = product
         state.selected_options_text = full_options_text
         state.stage = "awaiting_variant"
@@ -1225,7 +1225,7 @@ def _fast_parse_message(
             # Check if required options (like Size or Color) are missing in user request
             if not already_confirmed:
                 is_complete, missing_opt_name, missing_vals = _check_missing_options(matched_prod, full_options_text)
-                if not is_complete and missing_opt_name and not is_checkout_cmd:
+                if not is_complete and missing_opt_name:
                     state.selected_product = matched_prod
                     state.selected_options_text = full_options_text
                     state.stage = "awaiting_variant"

@@ -456,7 +456,7 @@ def add_to_draft_order(
             variant_gid = variant["id"]  # already in gid://shopify/ProductVariant/XXX form
 
             existing = _carts.get(session_id)
-            if existing and existing.get("cart_id"):
+            if existing and existing.get("cart_id") and str(existing["cart_id"]).startswith("gid://shopify/Cart/"):
                 cart = _storefront_cart_add(domain, storefront_token, existing["cart_id"], variant_gid, quantity)
             else:
                 cart = _storefront_cart_create(domain, storefront_token, variant_gid, quantity)
