@@ -79,12 +79,27 @@ WORD_TO_NUM = {
 
 def extract_quantity(text: str) -> int:
     text_lower = text.lower()
-    m = re.search(r"\b(\d+)\b", text_lower)
-    if m:
-        return int(m.group(1))
-    for word, val in WORD_TO_NUM.items():
-        if re.search(r"\b" + word + r"\b", text_lower):
+    # Strip size designations like "size 9", "size 10", "sz 9", "waist 32" so digits after "size" are not treated as quantity
+    clean_text = re.sub(r"\b(size|sz|waist|length|number|no|#)\s*:?\s*#?\d+\b", "", text_lower)
+
+    # Check for explicit action quantity (e.g. "add 2", "get 3", "buy 2")
+    m_action = re.search(r"\b(?:add|get|buy|want|need|select)\s+(\d+)\b", clean_text)
+    if m_action:
+        val = int(m_action.group(1))
+        if 1 <= val <= 99:
             return val
+
+    # Match standalone digit only if not part of size designation
+    m = re.search(r"\b(\d+)\b", clean_text)
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            return val
+
+    for word, val in WORD_TO_NUM.items():
+        if re.search(r"\b" + word + r"\b", clean_text):
+            return val
+
     return 1
 
 
@@ -297,7 +312,7 @@ def _find_variant(product: dict, variant_ref: Optional[str]) -> Optional[dict]:
     if not variants:
         return None
 
-    raw_words = [w.strip() for w in re.split(r'\W+', ref) if w.strip() and not w.strip().isdigit()]
+    raw_words = [w.strip() for w in re.split(r'\W+', ref) if w.strip()]
     ref_words = [w for w in raw_words if w not in action_noise]
     if not ref_words:
         ref_words = raw_words
