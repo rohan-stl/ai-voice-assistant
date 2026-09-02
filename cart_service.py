@@ -20,6 +20,7 @@ Required .env variables:
 
 import os
 import requests
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -140,6 +141,68 @@ mutation cartLinesAdd($cartId: ID!, $lines: [CartLineInput!]!) {
 }
 """
 
+_GQL_CART_REMOVE = """
+mutation cartLinesRemove($cartId: ID!, $lineIds: [ID!]!) {
+  cartLinesRemove(cartId: $cartId, lineIds: $lineIds) {
+    cart {
+      id
+      checkoutUrl
+      totalQuantity
+      cost {
+        totalAmount { amount currencyCode }
+        subtotalAmount { amount currencyCode }
+      }
+      lines(first: 50) {
+        nodes {
+          id
+          quantity
+          merchandise {
+            ... on ProductVariant {
+              id
+              title
+              price { amount currencyCode }
+              product { title featuredImage { url } onlineStoreUrl }
+            }
+          }
+        }
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+_GQL_CART_UPDATE = """
+mutation cartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
+  cartLinesUpdate(cartId: $cartId, lines: $lines) {
+    cart {
+      id
+      checkoutUrl
+      totalQuantity
+      cost {
+        totalAmount { amount currencyCode }
+        subtotalAmount { amount currencyCode }
+      }
+      lines(first: 50) {
+        nodes {
+          id
+          quantity
+          merchandise {
+            ... on ProductVariant {
+              id
+              title
+              price { amount currencyCode }
+              product { title featuredImage { url } onlineStoreUrl }
+            }
+          }
+        }
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
 
 def _storefront_cart_create(domain: str, storefront_token: str, variant_gid: str, quantity: int) -> dict:
     resp = requests.post(
@@ -154,11 +217,15 @@ def _storefront_cart_create(domain: str, storefront_token: str, variant_gid: str
     resp.raise_for_status()
     data = resp.json()
 
-    errors = data.get("data", {}).get("cartCreate", {}).get("userErrors", [])
-    if errors:
-        raise Exception(f"Storefront cart create error: {errors}")
+    if not isinstance(data, dict) or "data" not in data or not data.get("data"):
+        raise Exception(f"Storefront cart create GraphQL error: {data.get('errors') if isinstance(data, dict) else data}")
 
-    return data["data"]["cartCreate"]["cart"]
+    cart_create = data["data"].get("cartCreate") or {}
+    errors = cart_create.get("userErrors", [])
+    if errors:
+        raise Exception(f"Storefront cart create userErrors: {errors}")
+
+    return cart_create.get("cart", {})
 
 
 def _storefront_cart_add(domain: str, storefront_token: str, cart_id: str, variant_gid: str, quantity: int) -> dict:
@@ -174,11 +241,63 @@ def _storefront_cart_add(domain: str, storefront_token: str, cart_id: str, varia
     resp.raise_for_status()
     data = resp.json()
 
-    errors = data.get("data", {}).get("cartLinesAdd", {}).get("userErrors", [])
-    if errors:
-        raise Exception(f"Storefront cart add error: {errors}")
+    if not isinstance(data, dict) or "data" not in data or not data.get("data"):
+        raise Exception(f"Storefront cart add GraphQL error: {data.get('errors') if isinstance(data, dict) else data}")
 
-    return data["data"]["cartLinesAdd"]["cart"]
+    cart_add = data["data"].get("cartLinesAdd") or {}
+    errors = cart_add.get("userErrors", [])
+    if errors:
+        raise Exception(f"Storefront cart add userErrors: {errors}")
+
+    return cart_add.get("cart", {})
+
+
+def _storefront_cart_remove(domain: str, storefront_token: str, cart_id: str, line_ids: list[str]) -> dict:
+    resp = requests.post(
+        _storefront_url(domain),
+        json={
+            "query": _GQL_CART_REMOVE,
+            "variables": {"cartId": cart_id, "lineIds": line_ids},
+        },
+        headers=_storefront_headers(storefront_token),
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if not isinstance(data, dict) or "data" not in data or not data.get("data"):
+        raise Exception(f"Storefront cart remove GraphQL error: {data.get('errors') if isinstance(data, dict) else data}")
+
+    errors = data["data"].get("cartLinesRemove", {}).get("userErrors", [])
+    if errors:
+        raise Exception(f"Storefront cart remove error: {errors}")
+
+    return data["data"]["cartLinesRemove"]["cart"]
+
+
+def _storefront_cart_update(domain: str, storefront_token: str, cart_id: str, line_id: str, new_quantity: int) -> dict:
+    resp = requests.post(
+        _storefront_url(domain),
+        json={
+            "query": _GQL_CART_UPDATE,
+            "variables": {"cartId": cart_id, "lines": [{"id": line_id, "quantity": new_quantity}]},
+        },
+        headers=_storefront_headers(storefront_token),
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if not isinstance(data, dict) or "data" not in data or not data.get("data"):
+        raise Exception(f"Storefront cart update GraphQL error: {data.get('errors') if isinstance(data, dict) else data}")
+
+    errors = data["data"].get("cartLinesUpdate", {}).get("userErrors", [])
+    if errors:
+        raise Exception(f"Storefront cart update error: {errors}")
+
+    return data["data"]["cartLinesUpdate"]["cart"]
+
+
 
 
 def _serialise_storefront_cart(cart: dict) -> dict:
@@ -373,6 +492,96 @@ def add_to_draft_order(
     return serialised
 
 
+def remove_from_cart_by_variant(
+    session_id: str,
+    shop_domain: str,
+    variant_id: str,
+    admin_token: str = None,
+    new_quantity: Optional[int] = None,
+) -> dict:
+    """
+    Remove or update a line item from a session's cart matching variant_id (or GID).
+    """
+    domain = shop_domain or _DEFAULT_DOMAIN
+    storefront_token = _DEFAULT_STOREFRONT_TOKEN
+    resolved_admin_token = admin_token or _DEFAULT_ADMIN_TOKEN
+
+    variant_str = str(variant_id)
+    numeric_id = _gid_to_id(variant_str) if "gid://" in variant_str else int(variant_str)
+
+    # ── Storefront API removal/update ───────────────────────────────────
+    existing = _carts.get(session_id)
+    if existing and existing.get("cart_id"):
+        target_line_id = None
+        line_ids_to_remove = []
+        for line in existing.get("lines", []):
+            line_var_id = str(line.get("variant_id", ""))
+            line_num_id = _gid_to_id(line_var_id) if "gid://" in line_var_id else (int(line_var_id) if line_var_id.isdigit() else None)
+            if line_num_id == numeric_id or line_var_id == variant_str:
+                target_line_id = line.get("line_id")
+                line_ids_to_remove.append(target_line_id)
+
+        if storefront_token and str(existing.get("cart_id", "")).startswith("gid://shopify/Cart/"):
+            try:
+                if new_quantity is not None and new_quantity > 0 and target_line_id:
+                    cart = _storefront_cart_update(domain, storefront_token, existing["cart_id"], target_line_id, new_quantity)
+                elif line_ids_to_remove:
+                    cart = _storefront_cart_remove(domain, storefront_token, existing["cart_id"], line_ids_to_remove)
+                else:
+                    return existing
+
+                serialised = _serialise_storefront_cart(cart)
+                _carts[session_id] = serialised
+                return serialised
+            except Exception as exc:
+                print(f"[cart] Storefront remove/update failed: {exc}")
+
+        # Fallback local filter
+        if new_quantity is not None and new_quantity > 0:
+            for l in existing.get("lines", []):
+                if _gid_to_id(str(l.get("variant_id","0"))) == numeric_id:
+                    l["quantity"] = new_quantity
+        else:
+            existing["lines"] = [
+                l for l in existing.get("lines", [])
+                if _gid_to_id(str(l.get("variant_id","0"))) != numeric_id
+            ]
+        existing["total_quantity"] = sum(l.get("quantity", 1) for l in existing["lines"])
+        return existing
+
+    # ── Draft Orders removal ───────────────────────────────────────────
+    draft_info = _draft_orders.get(session_id)
+    if draft_info and draft_info.get("draft_id") and resolved_admin_token:
+        draft_id = draft_info["draft_id"]
+        get_resp = requests.get(
+            _admin_url(domain, f"draft_orders/{draft_id}.json"),
+            headers=_admin_headers(resolved_admin_token),
+            timeout=15,
+        )
+        if get_resp.ok:
+            existing_lines = get_resp.json()["draft_order"].get("line_items", [])
+            clean_lines = [
+                {"variant_id": l["variant_id"], "quantity": l["quantity"]}
+                for l in existing_lines if l.get("variant_id") != numeric_id
+            ]
+            put_resp = requests.put(
+                _admin_url(domain, f"draft_orders/{draft_id}.json"),
+                json={"draft_order": {"line_items": clean_lines}},
+                headers=_admin_headers(resolved_admin_token),
+                timeout=20,
+            )
+            if put_resp.ok:
+                draft = put_resp.json()["draft_order"]
+                lines = draft_info.get("lines", [])
+                dummy_prod = {"title": "Product"}
+                dummy_var = {"price": "0.00"}
+                serialised = _serialise_draft(draft, dummy_prod, dummy_var)
+                _draft_orders[session_id] = {"draft_id": draft["id"], **serialised}
+                return serialised
+
+    return {"cart_id": "", "total_quantity": 0, "lines": []}
+
+
 def get_draft_order(session_id: str) -> dict | None:
     """Return the current cart for a session (or None)."""
     if session_id in _carts:
@@ -385,3 +594,53 @@ def clear_draft_order(session_id: str):
     """Remove cart state for a session (e.g. on reset)."""
     _carts.pop(session_id, None)
     _draft_orders.pop(session_id, None)
+
+
+def sync_native_cart(session_id: str, cart_context: dict | None):
+    """
+    Sync backend session cart with native Shopify store cart (/cart.js).
+    Enables instant matching if customer added/removed items via Shopify theme buttons.
+    """
+    if not cart_context or not isinstance(cart_context, dict):
+        return
+    items = cart_context.get("items", [])
+    if not isinstance(items, list):
+        return
+
+    lines = []
+    for item in items:
+        price_val = item.get("price", 0)
+        price_str = f"{price_val / 100.0:.2f}" if isinstance(price_val, (int, float)) and price_val > 50 else str(price_val)
+        
+        line_price_val = item.get("final_line_price", item.get("line_price", 0))
+        line_total_str = f"{line_price_val / 100.0:.2f}" if isinstance(line_price_val, (int, float)) and line_price_val > 50 else str(line_price_val)
+
+        lines.append({
+            "line_id": str(item.get("key", item.get("id", ""))),
+            "quantity": item.get("quantity", 1),
+            "variant_id": str(item.get("variant_id", item.get("id", ""))),
+            "variant_title": item.get("variant_title") or item.get("title", ""),
+            "product_title": item.get("product_title") or item.get("title", ""),
+            "product_image": item.get("image"),
+            "product_url": item.get("url"),
+            "price": price_str,
+            "currency": cart_context.get("currency", "USD"),
+            "line_total": line_total_str,
+        })
+
+    existing = _carts.get(session_id, {})
+    total_qty = cart_context.get("item_count", sum(l["quantity"] for l in lines))
+    total_price = cart_context.get("total_price", 0)
+    total_str = f"{total_price / 100.0:.2f}" if isinstance(total_price, (int, float)) and total_price > 50 else str(total_price)
+
+    _carts[session_id] = {
+        "cart_id": existing.get("cart_id", session_id),
+        "checkout_url": existing.get("checkout_url", "/cart"),
+        "total_quantity": total_qty,
+        "subtotal": total_str,
+        "total": total_str,
+        "currency": cart_context.get("currency", "USD"),
+        "lines": lines,
+    }
+
+

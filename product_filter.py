@@ -76,19 +76,10 @@ def merge_filters(new_filters: dict, previous_filters: dict | None) -> dict:
 
     Rules:
     - No previous_filters -> return new_filters unchanged.
-    - The "subject" of a search is whichever of product_type / product_name
-      is set (a turn only ever pins down one of these — a specific named
-      product, OR a general category, not both). If the new turn names a
-      subject that differs from the previous turn's subject (e.g. "the
-      complete snowboard" -> "T-shirt", or snowboards -> t-shirts), treat
-      it as a brand new search and don't carry anything over. This has to
-      compare across both fields, not each field to itself, because a
-      turn that names a product (product_name set) followed by a turn
-      that names a category (product_type set) is still a subject change
-      even though neither field individually "conflicts" with itself.
-    - Otherwise, any non-null value in new_filters overrides the
-      previous value for that field; null values fall back to whatever
-      the previous turn had.
+    - If the new turn specifies a primary subject filter (product_type, vendor, or product_name)
+      that differs from or conflicts with the previous turn's primary filter, reset previous
+      primary filters and treat as a new search.
+    - Otherwise, merge non-null values into previous_filters.
     """
     if not previous_filters:
         return new_filters
@@ -96,10 +87,31 @@ def merge_filters(new_filters: dict, previous_filters: dict | None) -> dict:
     def _norm(value):
         return (value or "").strip().lower()
 
-    new_subject = _norm(new_filters.get("product_type")) or _norm(new_filters.get("product_name"))
-    prev_subject = _norm(previous_filters.get("product_type")) or _norm(previous_filters.get("product_name"))
+    new_type = _norm(new_filters.get("product_type"))
+    new_name = _norm(new_filters.get("product_name"))
+    new_vendor = _norm(new_filters.get("vendor"))
 
-    if new_subject and prev_subject and new_subject != prev_subject:
+    prev_type = _norm(previous_filters.get("product_type"))
+    prev_name = _norm(previous_filters.get("product_name"))
+    prev_vendor = _norm(previous_filters.get("vendor"))
+
+    # Determine if primary subject/category/vendor changed
+    subject_changed = False
+
+    if new_type and prev_type and new_type != prev_type:
+        subject_changed = True
+    elif new_name and prev_name and new_name != prev_name:
+        subject_changed = True
+    elif new_vendor and prev_vendor and new_vendor != prev_vendor:
+        subject_changed = True
+    elif new_type and prev_vendor and not new_vendor:
+        subject_changed = True
+    elif new_vendor and prev_type and not new_type:
+        subject_changed = True
+    elif new_name and (prev_type or prev_vendor):
+        subject_changed = True
+
+    if subject_changed:
         return new_filters
 
     merged = dict(previous_filters)

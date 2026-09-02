@@ -226,24 +226,25 @@ TESTS = {
 
     # ── Test 1: Full T-shirt flow ─────────────────────────────────────────
     "tshirt_cart": {
-        "name": "Browse T-shirts → select variant → confirm → add to cart",
+        "name": "Browse T-shirts → select variant → add to cart directly",
         "steps": [
             {
                 "message": "Show me T-shirts under $50",
                 "assertions": [
-                    # After filter result with matches, stage is awaiting_variant
                     {"field": "stage",    "check": "eq",  "value": "awaiting_variant"},
                     {"field": "products", "check": "gt",  "value": 0},
                 ],
             },
             {
-                "message": "Select Classic T-Shirt size M",
+                # Specify BOTH color and size → all options covered → asks for confirmation
+                "message": "Select Classic T-Shirt Blue size M",
                 "assertions": [
                     {"field": "stage",  "check": "eq",      "value": "awaiting_confirm"},
                     {"field": "answer", "check": "contains", "value": "confirm"},
                 ],
             },
             {
+                # "Yes, add to cart" has "add" + "cart" → direct add
                 "message": "Yes, add to cart",
                 "assertions": [
                     {"field": "stage",               "check": "eq",      "value": "browse"},
@@ -256,9 +257,9 @@ TESTS = {
         ],
     },
 
-    # ── Test 2: Voice command (TTS audio → /voice endpoint → STT) ──────────
+    # ── Test 2: Voice command — specify variant (no add) → confirm → add ──
     "voice_add_to_cart": {
-        "name": "Voice command: browse + variant + confirm via /voice endpoint",
+        "name": "Voice command: browse + specify variant → confirm → add to cart",
         "steps": [
             {
                 "message": "Show me snowboards",
@@ -269,13 +270,14 @@ TESTS = {
                 ],
             },
             {
-                # Be specific — name the product and variant so no ambiguity
+                # Saying variant only (no "add"/"cart" keywords) → confirmation prompt
                 "message": "I want The Complete Snowboard in Powder colour",
                 "assertions": [
                     {"field": "stage", "check": "eq", "value": "awaiting_confirm"},
                 ],
             },
             {
+                # "Yes please add it to my cart" has "add" + "cart" → direct add, skip confirm
                 "message": "Yes please add it to my cart",
                 "assertions": [
                     {"field": "stage",             "check": "eq",      "value": "browse"},
@@ -300,18 +302,13 @@ TESTS = {
                 ],
             },
             {
+                # "add ... to my cart" → has_explicit_add=True → direct add, no confirmation
                 "message": "Add 2 Classic T-Shirt Blue Medium to my cart",
                 "assertions": [
-                    {"field": "stage",    "check": "eq",      "value": "awaiting_confirm"},
-                    {"field": "quantity", "check": "eq",       "value": 2},
-                    {"field": "answer",   "check": "contains", "value": "2x"},
-                ],
-            },
-            {
-                "message": "Yes, confirm",
-                "assertions": [
                     {"field": "stage",              "check": "eq", "value": "browse"},
+                    {"field": "cart",               "check": "not_none"},
                     {"field": "cart.total_quantity", "check": "gt", "value": 1},
+                    {"field": "answer",              "check": "contains", "value": "Added"},
                 ],
             },
         ],
@@ -366,7 +363,8 @@ TESTS = {
         "steps": [
             {"message": "Show me T-shirts under $50",
              "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_variant"}]},
-            {"message": "Select Classic T-Shirt size M",
+            # Specify color AND size so both options covered → confirmation
+            {"message": "Select Classic T-Shirt Blue size M",
              "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_confirm"}]},
             {"message": "No, cancel",
              "assertions": [
@@ -387,18 +385,20 @@ TESTS = {
         "steps": [
             {"message": "Show me T-shirts",
              "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_variant"}]},
+            # "Add ... to cart" → direct add, no confirmation needed
             {"message": "Add Classic T-Shirt Blue M to cart",
-             "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_confirm"}]},
-            {"message": "Yes",
              "assertions": [
-                 {"field": "cart",               "check": "not_none"},
-                 {"field": "cart.total_quantity", "check": "gt", "value": 0},
+                 {"field": "stage",               "check": "eq",      "value": "browse"},
+                 {"field": "cart",                "check": "not_none"},
+                 {"field": "cart.total_quantity",  "check": "gt",      "value": 0},
              ]},
             # Add a second item (The Complete Snowboard, Powder)
             {"message": "Show me snowboards",
              "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_variant"}]},
+            # Variant-only (no add/cart) → asks for confirmation
             {"message": "The Complete Snowboard in Powder colour",
              "assertions": [{"field": "stage", "check": "eq", "value": "awaiting_confirm"}]},
+            # "Add it" has "add" → direct add
             {"message": "Add it",
              "assertions": [
                  {"field": "cart.total_quantity", "check": "gt", "value": 1},

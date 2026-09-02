@@ -434,10 +434,10 @@
       <!-- Welcome message injected by JS -->
     </div>
 
-    <div class="status-bar" id="statusBar">Ready — speak or type your question</div>
+    <div class="status-bar" id="statusBar">Ready — tap 🎤 to speak or type below</div>
 
     <div class="input-area">
-      <button class="mic-btn" id="micBtn" title="Hold to record">🎤</button>
+      <button class="mic-btn" id="micBtn" title="Tap to speak">🎤</button>
       <input
         class="text-input"
         id="textInput"
@@ -506,17 +506,17 @@ let currentStage = "browse";
 let cartData = null;
 let currentAudio = null;
 
-const $messages = document.getElementById("messages");
-const $textInput = document.getElementById("textInput");
-const $sendBtn = document.getElementById("sendBtn");
-const $micBtn = document.getElementById("micBtn");
-const $statusBar = document.getElementById("statusBar");
-const $cartItems = document.getElementById("cartItems");
-const $cartBadge = document.getElementById("cartBadge");
+const $messages   = document.getElementById("messages");
+const $textInput  = document.getElementById("textInput");
+const $sendBtn    = document.getElementById("sendBtn");
+const $micBtn     = document.getElementById("micBtn");
+const $statusBar  = document.getElementById("statusBar");
+const $cartItems  = document.getElementById("cartItems");
+const $cartBadge  = document.getElementById("cartBadge");
 const $cartFooter = document.getElementById("cartFooter");
-const $cartTotal = document.getElementById("cartTotal");
-const $checkoutBtn = document.getElementById("checkoutBtn");
-const $resetBtn = document.getElementById("resetBtn");
+const $cartTotal  = document.getElementById("cartTotal");
+const $checkoutBtn= document.getElementById("checkoutBtn");
+const $resetBtn   = document.getElementById("resetBtn");
 
 // ─────────────────────────────────────────────────────────
 // Message rendering helpers
@@ -574,10 +574,10 @@ function removeTyping() {
 // ─────────────────────────────────────────────────────────
 function stageBadge(stage) {
   const labels = {
-    browse: ["🔍 Browsing", "stage-browse"],
-    awaiting_variant: ["✋ Choose Option", "stage-variant"],
-    awaiting_confirm: ["✅ Confirm", "stage-confirm"],
-    done: ["✅ Added", "stage-confirm"],
+    browse:           ["🔍 Browsing",      "stage-browse"],
+    awaiting_variant: ["✋ Choose Option",  "stage-variant"],
+    awaiting_confirm: ["✅ Confirm",        "stage-confirm"],
+    done:             ["✅ Added",          "stage-confirm"],
   };
   const [label, cls] = labels[stage] || ["💬 Chat", "stage-browse"];
   return `<span class="stage-badge ${cls}">${label}</span><br/>`;
@@ -729,8 +729,7 @@ function updateCartSidebar(cart) {
 
 // ─────────────────────────────────────────────────────────
 // Sync item to native Shopify theme cart via /cart/add.js
-// This makes the item appear in the store's cart icon.
-// Only works when the widget is embedded on the Shopify domain.
+// Only works when widget is embedded on the Shopify domain.
 // ─────────────────────────────────────────────────────────
 async function syncToThemeCart(cart) {
   try {
@@ -738,7 +737,6 @@ async function syncToThemeCart(cart) {
     const lastLine = cart.lines[cart.lines.length - 1];
     if (!lastLine || !lastLine.variant_id) return;
 
-    // Extract numeric ID from GID (gid://shopify/ProductVariant/12345 → 12345)
     const rawId = String(lastLine.variant_id);
     const numericId = rawId.includes("/") ? parseInt(rawId.split("/").pop(), 10) : parseInt(rawId, 10);
     if (!numericId || isNaN(numericId)) return;
@@ -749,24 +747,18 @@ async function syncToThemeCart(cart) {
       body: JSON.stringify({ items: [{ id: numericId, quantity: lastLine.quantity || 1 }] }),
     });
 
-    if (!resp.ok) {
-      console.warn("[AI Cart] /cart/add.js returned", resp.status);
-      return;
-    }
+    if (!resp.ok) { console.warn("[AI Cart] /cart/add.js returned", resp.status); return; }
 
-    // Refresh the theme cart count badge
     const cartResp = await fetch("/cart.js");
     if (cartResp.ok) {
       const nativeCart = await cartResp.json();
       const count = nativeCart.item_count || 0;
-      // Update common cart badge selectors used by Shopify themes
       document.querySelectorAll(
         ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
       ).forEach(el => { el.textContent = count; if (count > 0) el.removeAttribute("hidden"); });
       console.log(`[AI Cart] Synced to native cart — ${count} item(s)`);
     }
   } catch (err) {
-    // Non-fatal: widget may be running outside Shopify (e.g. localhost dev)
     console.warn("[AI Cart] Native cart sync skipped (not on Shopify domain):", err.message);
   }
 }
@@ -780,18 +772,20 @@ function processResponse(data, userMessage) {
   let html = stageBadge(currentStage);
   html += renderMarkdown(data.answer || "");
 
-
-
   // Confirm card
   if (currentStage === "awaiting_confirm" && data.selected_product && data.selected_variant) {
     html += renderConfirmCard(data.selected_product, data.selected_variant, data.quantity || 1);
+  }
+
+  // Products grid
+  if (data.products && data.products.length > 0) {
+    html += renderProducts(data.products, currentStage);
   }
 
   // Cart success
   if (data.cart) {
     html += renderCartSuccess(data.cart);
     updateCartSidebar(data.cart);
-    // Sync to native Shopify theme cart so the cart icon updates
     syncToThemeCart(data.cart);
   }
 
@@ -802,14 +796,17 @@ function processResponse(data, userMessage) {
 
   appendMsg("ai", html);
 
-  // Play audio
+  // Speech — use ElevenLabs server audio if available, else browser TTS (always works, free)
   if (data.audio) {
     playBase64Audio(data.audio);
+  } else {
+    // Browser Web Speech Synthesis fallback — works in Chrome, Safari, Edge
+    speakText(data.answer || "");
   }
 }
 
 // ─────────────────────────────────────────────────────────
-// Send a text message
+// Send a text message to /voice-text
 // ─────────────────────────────────────────────────────────
 async function sendMessage(text) {
   const message = (text || $textInput.value).trim();
@@ -851,14 +848,128 @@ async function sendMessage(text) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Voice recording
+// Voice — Web Speech API (PRIMARY, free, instant, works for single words)
+//         Falls back to MediaRecorder → server for unsupported browsers
 // ─────────────────────────────────────────────────────────
-$micBtn.addEventListener("click", async () => {
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-    return;
-  }
 
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let isListening = false;
+
+function buildRecognition() {
+  if (!SpeechRecognition) return null;
+  const r = new SpeechRecognition();
+  r.lang = "en-US";
+  r.continuous = false;     // Auto-stops after one utterance — perfect for commands
+  r.interimResults = true;  // Show live partial transcript in status bar
+  r.maxAlternatives = 1;
+
+  // Show live partial transcript so user sees what's being heard in real time
+  r.onresult = (event) => {
+    let interim = "", final = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const t = event.results[i][0].transcript;
+      if (event.results[i].isFinal) final += t;
+      else interim += t;
+    }
+    if (interim) setStatus(`🎙️ Hearing: "${interim}"`);
+    if (final) {
+      const text = final.trim();
+      if (text) {
+        setStatus(`✅ Heard: "${text}"`);
+        stopListening();
+        dispatchVoiceText(text);
+      }
+    }
+  };
+
+  r.onerror = (event) => {
+    stopListening();
+    if (event.error === "no-speech") {
+      setStatus("🔇 No speech detected — tap 🎤 and speak clearly");
+    } else if (event.error === "not-allowed") {
+      setStatus("🚫 Microphone blocked — allow mic in browser settings");
+    } else {
+      setStatus(`⚠️ Voice error: ${event.error} — please type instead`);
+    }
+  };
+
+  r.onend = () => {
+    if (isListening) stopListening();
+  };
+
+  return r;
+}
+
+function startListening() {
+  if (isProcessing) return;
+  recognition = buildRecognition();
+
+  if (recognition) {
+    // Primary path: Web Speech API
+    isListening = true;
+    $micBtn.classList.add("recording");
+    $micBtn.textContent = "⏹";
+    setStatus("🔴 Listening… speak now, tap ⏹ to cancel");
+    try {
+      recognition.start();
+    } catch (e) {
+      stopListening();
+      setStatus("⚠️ Could not start microphone");
+    }
+  } else {
+    // Fallback: MediaRecorder → server STT
+    startMediaRecorder();
+  }
+}
+
+function stopListening() {
+  isListening = false;
+  $micBtn.classList.remove("recording");
+  $micBtn.textContent = "🎤";
+  if (recognition) {
+    try { recognition.stop(); } catch (e) {}
+    recognition = null;
+  }
+}
+
+// Called when Web Speech API returns a final transcript
+async function dispatchVoiceText(text) {
+  appendMsg("user", `🎙️ ${escapeHtml(text)}`);
+  setStatus(`🎙️ Heard: "${text}" — processing…`);
+  setProcessing(true);
+  showTyping();
+
+  try {
+    const res = await fetch(`${CONFIG.apiBase}/voice-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        session_id: sessionId,
+        shop_domain: CONFIG.shopDomain || undefined,
+        storefront_token: CONFIG.storefrontToken || undefined,
+        admin_token: CONFIG.adminToken || undefined,
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    removeTyping();
+    processResponse(data, text);
+    setStatus(`Stage: ${currentStage}`);
+  } catch (err) {
+    removeTyping();
+    appendMsg("ai", "⚠️ Something went wrong. Please check the backend is running.");
+    setStatus("❌ Error — check backend connection");
+    console.error(err);
+  } finally {
+    setProcessing(false);
+  }
+}
+
+// Fallback: MediaRecorder → server STT (for Firefox and older browsers)
+async function startMediaRecorder() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
@@ -870,7 +981,7 @@ $micBtn.addEventListener("click", async () => {
       stream.getTracks().forEach(t => t.stop());
       $micBtn.classList.remove("recording");
       $micBtn.textContent = "🎤";
-      setStatus("Transcribing…");
+      setStatus("⏳ Processing audio…");
       setProcessing(true);
       showTyping();
 
@@ -887,12 +998,26 @@ $micBtn.addEventListener("click", async () => {
         if (!res.ok) throw new Error(`Server error ${res.status}`);
         const data = await res.json();
         removeTyping();
-        if (data.transcription) appendMsg("user", `🎙️ ${escapeHtml(data.transcription)}`);
+
+        // Server signals STT quota exhausted — guide user to type
+        if (data.use_browser_stt) {
+          setStatus("⚠️ Voice quota exhausted — please type your message below");
+          appendMsg("ai", "⚠️ My voice transcription service is currently unavailable. Please <strong>type</strong> your message in the box below!");
+          setProcessing(false);
+          $textInput.focus();
+          return;
+        }
+
+        if (data.transcription) {
+          appendMsg("user", `🎙️ ${escapeHtml(data.transcription.trim())}`);
+          setStatus(`🎙️ Heard: "${data.transcription.trim()}"`);
+        }
         processResponse(data, data.transcription);
         setStatus(`Stage: ${currentStage}`);
       } catch (err) {
         removeTyping();
-        appendMsg("ai", "⚠️ Could not process voice input. Please try again.");
+        appendMsg("ai", "⚠️ Could not process voice input. Please type your message instead.");
+        setStatus("❌ Voice error — please type instead");
         console.error(err);
       } finally {
         setProcessing(false);
@@ -902,10 +1027,24 @@ $micBtn.addEventListener("click", async () => {
     mediaRecorder.start();
     $micBtn.classList.add("recording");
     $micBtn.textContent = "⏹";
-    setStatus("🎙️ Recording — click to stop");
+    setStatus("🔴 Recording… tap ⏹ to stop");
   } catch {
-    setStatus("Microphone access denied");
+    setStatus("🚫 Microphone access denied — check browser permissions");
   }
+}
+
+// ── Mic button click ──────────────────────────────────────────────────────
+$micBtn.addEventListener("click", () => {
+  if (isListening) {
+    stopListening();
+    setStatus("🎤 Cancelled — tap again to speak");
+    return;
+  }
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+    return;
+  }
+  startListening();
 });
 
 // ─────────────────────────────────────────────────────────
@@ -925,8 +1064,10 @@ function handleProductClick(el) {
   } catch {}
 }
 
+
+
 // ─────────────────────────────────────────────────────────
-// Audio playback
+// Audio playback — ElevenLabs base64 OR browser TTS fallback
 // ─────────────────────────────────────────────────────────
 function playBase64Audio(b64) {
   try {
@@ -938,6 +1079,81 @@ function playBase64Audio(b64) {
     currentAudio.onended = () => URL.revokeObjectURL(url);
     currentAudio.play().catch(() => {});
   } catch {}
+}
+
+// ── Browser TTS via Web Speech Synthesis ─────────────────
+// Works in Chrome, Safari, Edge — completely free, no quota.
+// Handles the autoplay policy by unlocking on first user gesture.
+let _ttsUnlocked = false;
+let _voicesLoaded = false;
+
+function _loadVoices() {
+  const v = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+  if (v.length > 0) _voicesLoaded = true;
+  return v;
+}
+
+if (window.speechSynthesis) {
+  _loadVoices();
+  window.speechSynthesis.onvoiceschanged = () => { _voicesLoaded = true; _loadVoices(); };
+}
+
+// Unlock TTS on any first user interaction (required by browsers)
+function _unlockTTS() {
+  if (_ttsUnlocked || !window.speechSynthesis) return;
+  _ttsUnlocked = true;
+  // Speak a silent utterance to unlock the audio context
+  const u = new SpeechSynthesisUtterance(" ");
+  u.volume = 0;
+  u.rate = 10;
+  window.speechSynthesis.speak(u);
+}
+["click", "keydown", "touchstart", "pointerdown"].forEach(evt =>
+  document.addEventListener(evt, _unlockTTS, { once: false, passive: true })
+);
+
+function speakText(text) {
+  if (!window.speechSynthesis) return;
+
+  // Strip markdown and emoji for natural speech
+  const clean = text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/[✅❌⚠️🎉🔍🛒🎙️👋📦💬✋🤖👤🏂👕🛍️💳]/g, "")
+    .replace(/https?:\/\/\S+/g, "")     // Remove URLs
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!clean) return;
+
+  window.speechSynthesis.cancel();
+
+  const speak = () => {
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = "en-US";
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v =>
+      v.lang.startsWith("en") &&
+      (v.name.includes("Samantha") || v.name.includes("Daniel") ||
+       v.name.includes("Karen") || v.name.includes("Moira") ||
+       v.name.includes("Google US") || v.name.includes("Google UK"))
+    ) || voices.find(v => v.lang === "en-US" && !v.localService === false)
+      || voices.find(v => v.lang.startsWith("en"));
+    if (preferred) utter.voice = preferred;
+
+    window.speechSynthesis.speak(utter);
+  };
+
+  // If voices not loaded yet, wait a tick and retry
+  if (_voicesLoaded) {
+    speak();
+  } else {
+    setTimeout(speak, 300);
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -973,7 +1189,7 @@ function appendWelcome() {
   appendMsg("ai",
     `<span class="stage-badge stage-browse">🔍 Ready</span><br/>
     Hi! I'm your AI shopping assistant. 👋<br/><br/>
-    You can ask me things like:<br/>
+    You can <strong>tap the 🎤 mic and speak</strong>, or type:<br/>
     • <em>"Show me T-shirts under $50"</em><br/>
     • <em>"Find a blue snowboard"</em><br/>
     • <em>"Add size M to my cart"</em><br/><br/>
@@ -985,7 +1201,13 @@ function appendWelcome() {
 // Init
 // ─────────────────────────────────────────────────────────
 appendWelcome();
-setStatus(`Session: ${sessionId.slice(0, 16)}…`);
+
+// Show a friendly note if browser doesn't support Web Speech API
+if (!SpeechRecognition) {
+  setStatus("ℹ️ Voice not supported in this browser — please type your request");
+} else {
+  setStatus(`Ready — tap 🎤 to speak or type below`);
+}
 </script>
 </body>
 </html>

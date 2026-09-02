@@ -39,27 +39,34 @@ def _get_admin_token(shop_domain: str, client_id: str, client_secret: str) -> st
     return response.json()["access_token"]
 
 
+import time
+
+_PRODUCT_CACHE = {}  # cache_key -> (timestamp, products_list)
+CACHE_TTL_SECONDS = 60
+
+
 def get_products(
     first: int = 50,
     shop_domain: str = None,
     admin_token: str = None,
     client_id: str = None,
     client_secret: str = None,
+    force_refresh: bool = False,
 ) -> list:
     """
-    Fetch the product catalog from the Shopify Admin GraphQL API.
-
-    Multi-store usage:
-      Pass shop_domain + admin_token (a permanent token, e.g. from a
-      private/custom app install), OR shop_domain + client_id + client_secret
-      to use the existing OAuth client_credentials flow.
-
-    Single-store / local dev:
-      Leave all params as None — falls back to .env values.
+    Fetch the product catalog from the Shopify Admin GraphQL API with 60s caching.
     """
     domain = shop_domain or _DEFAULT_DOMAIN
     if not domain:
         raise ValueError("shop_domain is required")
+
+    cache_key = f"{domain}:{first}"
+    now = time.time()
+
+    if not force_refresh and cache_key in _PRODUCT_CACHE:
+        ts, cached_products = _PRODUCT_CACHE[cache_key]
+        if now - ts < CACHE_TTL_SECONDS:
+            return cached_products
 
     # Resolve the admin token
     if admin_token:
@@ -128,14 +135,19 @@ def get_products(
         headers=headers,
         timeout=20,
     )
-    response.raise_for_status()
-
     data = response.json()
 
     if "errors" in data:
         raise Exception(data["errors"])
 
-    return data["data"]["products"]["nodes"]
+    raw_products = data["data"]["products"]["nodes"]
+    # Filter out DRAFT, ARCHIVED, and hidden products so catalog matches Shopify Storefront channel
+    products = [
+        p for p in raw_products
+        if p.get("status") == "ACTIVE" and "hidden" not in p.get("title", "").lower()
+    ]
+    _PRODUCT_CACHE[cache_key] = (now, products)
+    return products
 
 
 if __name__ == "__main__":

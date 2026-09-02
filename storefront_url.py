@@ -24,11 +24,29 @@ def _as_list(value):
     ]
 
 
+def _clean_product_names(product_names: list, product_types: list) -> list:
+    if not product_names or not product_types:
+        return product_names
+
+    cleaned = []
+    type_roots = {pt.lower().replace("s", "") for pt in product_types}
+
+    for name in product_names:
+        name_root = name.lower().replace("s", "")
+        # If product_name is just the category name or a minor STT typo (e.g. snowboys vs snowboard), skip q parameter
+        if any(tr[:4] in name_root or name_root[:4] in tr for tr in type_roots if len(tr) >= 4):
+            continue
+        cleaned.append(name)
+
+    return cleaned
+
+
 def build_storefront_url(filters: dict) -> str:
     params = {}
 
-    product_names = _as_list(filters.get("product_name"))
     product_types = _as_list(filters.get("product_type"))
+    raw_names = _as_list(filters.get("product_name"))
+    product_names = _clean_product_names(raw_names, product_types)
     colors = _as_list(filters.get("color"))
     sizes = _as_list(filters.get("size"))
     vendors = _as_list(filters.get("vendor"))

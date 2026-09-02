@@ -63,6 +63,9 @@ class ConversationState:
     def touch(self):
         self.last_active = time.time()
 
+    # Accumulated option text across turns (e.g. "white t-shirt size m")
+    selected_options_text: str = ""
+
     def reset_selection(self):
         """Clear product/variant selection without clearing the cart."""
         self.stage = "browse"
@@ -71,6 +74,7 @@ class ConversationState:
         self.selected_variant = None
         self.quantity = 1
         self.previous_filters = {}
+        self.selected_options_text = ""
 
 
 class SessionStore:
