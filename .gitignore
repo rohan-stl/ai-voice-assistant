@@ -266,3 +266,5 @@ yarn-error.log*
 *~
 *.orig
 *.bak
+
+*.sh
