@@ -1250,15 +1250,16 @@ function _startWakeRec() {
   };
 
   _wakeRec.onerror = (e) => {
+    if (e.error === "aborted" || e.error === "no-speech") {
+      return;
+    }
     console.warn("[AiWakeWord] Wake recognition error:", e.error);
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       _setStatus("⚠️ Mic blocked. Click mic button to grant permission.");
       return;
     }
     if (!_enabled || _state !== "standby") return;
-    if (e.error !== "aborted" && e.error !== "no-speech") {
-      setTimeout(_startWakeRec, 1500);
-    }
+    setTimeout(_startWakeRec, 1500);
   };
 
   _wakeRec.onend = () => {
