@@ -1,16 +1,8 @@
 from urllib.parse import urlencode
 
 
-SHOPIFY_STORE_URL = "https://bhavin-ai-shopping-assistant-demo.myshopify.com"
-
-
 def _as_list(value):
-    """
-    Normalize a filter value into a list of trimmed strings.
-
-    Accepts None, a single string (possibly comma-separated, e.g.
-    "white, blue"), or an already-iterable value like a list.
-    """
+    """Normalize a filter value into a list of trimmed strings."""
     if value is None:
         return []
 
@@ -33,7 +25,6 @@ def _clean_product_names(product_names: list, product_types: list) -> list:
 
     for name in product_names:
         name_root = name.lower().replace("s", "")
-        # If product_name is just the category name or a minor STT typo (e.g. snowboys vs snowboard), skip q parameter
         if any(tr[:4] in name_root or name_root[:4] in tr for tr in type_roots if len(tr) >= 4):
             continue
         cleaned.append(name)
@@ -41,7 +32,12 @@ def _clean_product_names(product_names: list, product_types: list) -> list:
     return cleaned
 
 
-def build_storefront_url(filters: dict) -> str:
+def build_storefront_url(filters: dict = None, collection_handle: str = None) -> str:
+    """
+    Build relative storefront URL for a collection or search page.
+    Always returns relative path (e.g. /collections/summer-collection?filter.p.product_type=T-Shirt).
+    """
+    filters = filters or {}
     params = {}
 
     product_types = _as_list(filters.get("product_type"))
@@ -53,53 +49,40 @@ def build_storefront_url(filters: dict) -> str:
     max_price = filters.get("max_price")
     min_price = filters.get("min_price")
 
-    # Shopify's native collection filters (filter.p.*) are facet-based —
-    # there is no "product name" facet, so a title can't be expressed as
-    # a filter.p.* param the way product_type/vendor can. Free-text
-    # product-name matching only works through the storefront search
-    # endpoint's `q` param, so route there instead of /collections/all
-    # whenever a product_name is present.
-    use_search_endpoint = bool(product_names)
+    if collection_handle:
+        base_path = f"/collections/{collection_handle}"
+        use_search = False
+    else:
+        use_search = bool(product_names)
+        base_path = "/search" if use_search else "/collections/all"
 
-    if product_names:
+    if use_search and product_names:
         params["q"] = " ".join(product_names)
         params["type"] = "product"
 
-    # Product type (Shopify supports repeated params for OR-filtering)
     if product_types:
         params["filter.p.product_type"] = product_types
 
-    # Color
     if colors:
         params["filter.v.option.color"] = [c.title() for c in colors]
 
-    # Size
     if sizes:
         params["filter.v.option.size"] = [s.upper() for s in sizes]
 
-    # Vendor
     if vendors:
         params["filter.p.vendor"] = vendors
 
-    # Price
     if min_price is not None:
         params["filter.v.price.gte"] = min_price
     elif max_price is not None:
-        # Shopify's UI uses 0 as the lower bound
         params["filter.v.price.gte"] = 0
 
     if max_price is not None:
         params["filter.v.price.lte"] = max_price
 
     if not params:
-        return None
+        return base_path
 
-    # Keep results sorted consistently
     params["sort_by"] = "title-ascending"
-
-    base_path = "/search" if use_search_endpoint else "/collections/all"
-
-    return (
-        f"{SHOPIFY_STORE_URL}{base_path}?"
-        f"{urlencode(params, doseq=True)}"
-    )
+    query_str = urlencode(params, doseq=True)
+    return f"{base_path}?{query_str}"

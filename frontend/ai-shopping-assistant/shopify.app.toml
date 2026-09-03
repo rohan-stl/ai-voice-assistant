@@ -2,7 +2,7 @@
 
 client_id = "64250f16378df9cbc2ac2fe547c838f7"
 name = "AI Shopping Assistant"
-application_url = "https://jar-kirk-financial-indication.trycloudflare.com"
+application_url = "https://bigger-courses-meets-ent.trycloudflare.com"
 embedded = true
 
 [build]
@@ -23,7 +23,7 @@ redirect_urls = [ ]
 
 [app_proxy]
 # URL is auto-patched by start.sh using Cloudflare Quick Tunnel at launch
-url = "https://jar-kirk-financial-indication.trycloudflare.com"
+url = "https://bigger-courses-meets-ent.trycloudflare.com"
 subpath = "ai-assistant"
 prefix = "apps"
 

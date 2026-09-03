@@ -644,3 +644,102 @@ def sync_native_cart(session_id: str, cart_context: dict | None):
     }
 
 
+def fetch_live_cart_line(
+    session_id: str,
+    line_id: str = None,
+    variant_id: str = None,
+) -> Optional[dict]:
+    """
+    Return the current cart line matching line_id or variant_id.
+    Uses the backend-managed cache as the authoritative source
+    (refreshed from Shopify whenever sync_native_cart is called).
+    Returns None if the session has no cart or the line does not exist.
+    """
+    cart = get_draft_order(session_id)
+    if not cart:
+        return None
+    for line in cart.get("lines", []):
+        if line_id and line.get("line_id") == line_id:
+            return line
+        if variant_id:
+            lv = str(line.get("variant_id", ""))
+            # Accept both GID and numeric forms
+            if lv == str(variant_id):
+                return line
+            try:
+                if _gid_to_id(lv) == _gid_to_id(str(variant_id)):
+                    return line
+            except (ValueError, IndexError):
+                pass
+    return None
+
+
+def update_cart_line_quantity(
+    session_id: str,
+    shop_domain: str,
+    line_id: str,
+    variant_id: str,
+    new_quantity: int,
+    admin_token: str = None,
+) -> dict:
+    """
+    Set a specific cart line to a new absolute quantity.
+
+    Strategy:
+      1. Validate the line still exists in the backend cache.
+      2. If new_quantity <= 0, remove the line entirely.
+      3. Use Storefront API cartLinesUpdate (preferred).
+      4. Fall back to remove_from_cart_by_variant with new_quantity (Draft Orders).
+
+    The backend cache is updated so subsequent reads reflect the change without
+    needing a round-trip to Shopify.
+    """
+    domain = shop_domain or _DEFAULT_DOMAIN
+    storefront_token = _DEFAULT_STOREFRONT_TOKEN
+    resolved_admin_token = admin_token or _DEFAULT_ADMIN_TOKEN
+
+    existing = _carts.get(session_id)
+
+    # ── Storefront API path ──────────────────────────────────────────────────
+    if existing and storefront_token:
+        cart_gid = existing.get("cart_id", "")
+        if str(cart_gid).startswith("gid://shopify/Cart/"):
+            # Resolve actual line_id (may come from cache or caller)
+            actual_line_id = line_id
+            for l in existing.get("lines", []):
+                if l.get("line_id") == line_id:
+                    actual_line_id = l.get("line_id", line_id)
+                    break
+                # Fallback: match by variant_id
+                lv = str(l.get("variant_id", ""))
+                if lv == str(variant_id):
+                    actual_line_id = l.get("line_id", line_id)
+                    break
+            try:
+                if new_quantity <= 0:
+                    cart = _storefront_cart_remove(
+                        domain, storefront_token, cart_gid, [actual_line_id]
+                    )
+                else:
+                    cart = _storefront_cart_update(
+                        domain, storefront_token, cart_gid, actual_line_id, new_quantity
+                    )
+                serialised = _serialise_storefront_cart(cart)
+                _carts[session_id] = serialised
+                print(
+                    f"[cart] Line quantity updated to {new_quantity} — "
+                    f"total {serialised['total_quantity']} item(s)"
+                )
+                return serialised
+            except Exception as exc:
+                print(f"[cart] Storefront line update failed: {exc} — falling back")
+
+    # ── Draft Orders / local fallback ────────────────────────────────────────
+    return remove_from_cart_by_variant(
+        session_id=session_id,
+        shop_domain=shop_domain,
+        variant_id=variant_id,
+        admin_token=admin_token,
+        new_quantity=new_quantity if new_quantity > 0 else None,
+    )
+
