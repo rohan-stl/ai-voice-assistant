@@ -1,0 +1,178 @@
+<div
+  data-ai-assistant-root
+  data-teleported=""
+  data-widget-version="{{ widget_version | default: '2.1.10' }}"
+  data-installation-type="{{ installation_type | default: 'app-block' }}"
+  data-api-base="{{ api_base_url | default: '/apps/ai-assistant' }}"
+  data-wake-sound-url="{{ wake_sound_url | escape }}"
+  data-block-id="{{ block_id }}"
+  class="ai-fab-wrapper"
+<!-- ── Expandable Voice System Panel ────────────────────── -->
+  <div
+    class="ai-chat-panel ai-shopping-assistant"
+    id="ai-shopping-assistant-{{ block_id }}"
+    role="dialog"
+    aria-modal="false"
+    aria-label="AI Shopping Assistant"
+    aria-hidden="true"
+  >
+    <!-- Header -->
+    <div class="ai-panel-header">
+      <div class="ai-panel-header-icon" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="8" y="1" width="8" height="13" rx="4" fill="#ffffff"/>
+          <path d="M5 11a7 7 0 0 0 14 0" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+          <line x1="12" y1="18" x2="12" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+          <line x1="8" y1="22" x2="16" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="ai-panel-header-text">
+        <div class="ai-panel-eyebrow-row">
+          <span class="ai-panel-eyebrow">VOICE SHOPPING</span>
+          <span class="ai-online-badge"><span class="ai-online-dot"></span>Online</span>
+        </div>
+        <div class="ai-panel-title">AI Shopping Assistant</div>
+      </div>
+      <button
+        type="button"
+        class="ai-panel-close"
+        id="ai-panel-close-{{ block_id }}"
+        aria-label="Close AI Shopping Assistant"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div class="ai-panel-body">
+
+      <!-- Status -->
+      <div
+        class="ai-assistant-status"
+        id="ai-assistant-status-{{ block_id }}"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span>Tap the microphone to start</span>
+      </div>
+
+      <!-- Central Voice Orb + Waveform -->
+      <div class="ai-panel-mic-area">
+        <div class="ai-wave" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+
+        <div class="ai-orb-container">
+          <div class="ai-orb-ring" aria-hidden="true"></div>
+          <button
+            type="button"
+            class="ai-assistant-button ai-orb--idle"
+            id="ai-assistant-mic-{{ block_id }}"
+            aria-label="Start voice assistant"
+          >
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+              <rect x="8" y="1" width="8" height="13" rx="4" fill="#ffffff"/>
+              <path d="M5 11a7 7 0 0 0 14 0" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+              <line x1="12" y1="18" x2="12" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+              <line x1="8" y1="22" x2="16" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Customer Transcription Line -->
+      <div
+        class="ai-customer-transcription"
+        id="ai-customer-transcription-{{ block_id }}"
+        style="display:none;"
+        aria-live="polite"
+      ></div>
+
+      <!-- Quick Suggestion Chips (visible ONLY when idle) -->
+      <div class="ai-suggestion-chips" id="ai-suggestion-chips-{{ block_id }}">
+        <button type="button" class="ai-chip" data-query="Find T-shirts under $50">🔍 T-shirts under $50</button>
+        <button type="button" class="ai-chip" data-query="What's in my cart?">🛒 What's in my cart?</button>
+        <button type="button" class="ai-chip" data-query="Show new arrivals">✨ Show new arrivals</button>
+      </div>
+
+      <!-- Single Dynamic Response Container (replaces content on each turn) -->
+      <div
+        class="ai-assistant-response"
+        id="ai-assistant-response-{{ block_id }}"
+        aria-live="polite"
+        aria-atomic="false"
+      ></div>
+
+      <!-- Hands-free Settings Card -->
+      <div class="ai-ww-section" id="ai-ww-section-{{ block_id }}">
+        <div class="ai-ww-toggle-row">
+          <div class="ai-ww-label-wrap">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ai-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="22"></line>
+              <line x1="8" y1="22" x2="16" y2="22"></line>
+            </svg>
+            <div>
+              <div class="ai-ww-title" style="display:flex;align-items:center;gap:6px;">
+                <span>Hands-free mode</span>
+                <span class="ai-ww-dot ai-ww-dot--disabled" aria-hidden="true" style="position:static !important;display:inline-block !important;flex-shrink:0 !important;"></span>
+              </div>
+              <div class="ai-ww-subtitle">Activate with &ldquo;Hey Assistant&rdquo;</div>
+            </div>
+          </div>
+
+          <label class="ai-toggle-switch" aria-label="Toggle hands-free mode">
+            <input type="checkbox" class="ai-ww-enable-btn" id="ai-ww-enable-btn-{{ block_id }}" aria-label="Enable hands-free mode">
+            <span class="ai-toggle-slider"></span>
+          </label>
+        </div>
+
+        <p class="ai-ww-privacy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:2px;">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          Hands-free mode listens for &ldquo;Hey Assistant&rdquo;. No audio is sent until wake word or microphone is activated.
+        </p>
+      </div>
+
+    </div><!-- /ai-panel-body -->
+  </div><!-- /ai-chat-panel -->
+
+  <!-- ── FAB Trigger Button ───── -->
+  <div class="ai-fab-btn-wrap">
+    <button
+      type="button"
+      class="ai-fab-btn"
+      id="ai-fab-btn-{{ block_id }}"
+      aria-label="Open AI Shopping Assistant"
+      aria-expanded="false"
+      aria-controls="ai-shopping-assistant-{{ block_id }}"
+    >
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" style="display:block;flex-shrink:0;pointer-events:none;">
+        <rect x="8" y="1" width="8" height="13" rx="4" fill="#ffffff"/>
+        <path d="M5 11a7 7 0 0 0 14 0" stroke="#ffffff" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <line x1="12" y1="18" x2="12" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+        <line x1="8" y1="22" x2="16" y2="22" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <span class="ai-ww-dot ai-ww-dot--disabled" aria-hidden="true"></span>
+  </div>
+</div>
+
+<script>
+  (function(){
+    setTimeout(function(){
+      try {
+        var r = document.querySelector('[data-block-id="{{ block_id }}"]') || document.querySelector('[data-ai-assistant-root]');
+        if (r && r.parentNode && r.parentNode !== document.body) {
+          document.body.appendChild(r);
+        }
+      } catch(e) {}
+    }, 50);
+  })();
+</script>

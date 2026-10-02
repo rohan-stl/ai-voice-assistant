@@ -1,93 +1,882 @@
-// ===============================================================
-// API URL — uses Shopify App Proxy (relative, no hardcoded URL)
-// Override: set window.AI_ASSISTANT_API_BASE before this script
-// ===============================================================
+(function() {
+  "use strict";
 
-function getApiBaseUrl() {
-  if (window.AI_ASSISTANT_API_BASE) {
-    return window.AI_ASSISTANT_API_BASE.trim().replace(/\/$/, "");
-  }
-  // Shopify App Proxy route — Shopify forwards this to the backend
-  return "/apps/ai-assistant";
-}
+  // ===============================================================
+  // SHOPIFY AI SHOPPING ASSISTANT — v2.1.13 DOUBLE-ADD + BADGE FIX
+  // ===============================================================
+  const VERSION = "2.1.12";
 
-// ── Session ID (persisted in localStorage) ────────────────────────
-function getSessionId() {
-  try {
-    let id = localStorage.getItem("ai_session_id");
-    if (!id) {
-      id = "sess_" + Math.random().toString(36).slice(2, 10) + Date.now();
-      localStorage.setItem("ai_session_id", id);
+  function logWakeEvent(action, detail) {
+    if (window.AI_DEBUG || (typeof window !== "undefined" && window.location?.search?.includes("ai_debug=1"))) {
+      console.log(`[Wake] ${action}`, detail !== undefined ? detail : "");
     }
-    return id;
-  } catch (e) {
-    return "default";
   }
-}
 
-// ── Fetch live Shopify cart state ─────────────────────────────────
-async function getNativeShopifyCart() {
+  function delay(ms) {
+    return new Promise(resolve => setTrackedTimeout(resolve, ms));
+  }
+
+  // API URL — uses Shopify App Proxy (relative, no hardcoded URL)
+  function getApiBaseUrl() {
+    if (window.AI_ASSISTANT_API_BASE) {
+      return window.AI_ASSISTANT_API_BASE.trim().replace(/\/$/, "");
+    }
+    const root = typeof getCanonicalRoot === "function" ? getCanonicalRoot() : null;
+    if (root && root.dataset?.apiBase) {
+      return root.dataset.apiBase.trim().replace(/\/$/, "");
+    }
+    return "/apps/ai-assistant";
+  }
+
+  // ── Session ID (persisted in localStorage) ────────────────────────
+  function getSessionId() {
+    try {
+      let id = localStorage.getItem("ai_session_id");
+      if (!id) {
+        id = "sess_" + Math.random().toString(36).slice(2, 10) + Date.now();
+        localStorage.setItem("ai_session_id", id);
+      }
+      return id;
+    } catch (e) {
+      return "default";
+    }
+  }
+
+  // ── Native Storefront Ajax Cart Adapter (v2.1.9 Token-Free) ──────
+  const nativeCartAdapter = {
+    getRoot() {
+      return (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || "/";
+    },
+    async getCart() {
+      const root = this.getRoot();
+      const res = await fetch(`${root}cart.js`, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      return await res.json();
+    },
+    async addItems(items) {
+      const root = this.getRoot();
+      const res = await fetch(`${root}cart/add.js`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ items })
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      return await res.json();
+    },
+    async changeLine(lineKey, quantity) {
+      const root = this.getRoot();
+      const res = await fetch(`${root}cart/change.js`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ id: lineKey, quantity })
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      return await res.json();
+    },
+    async updateLines(updates) {
+      const root = this.getRoot();
+      const res = await fetch(`${root}cart/update.js`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ updates })
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      return await res.json();
+    },
+    async clearCart() {
+      const root = this.getRoot();
+      const res = await fetch(`${root}cart/clear.js`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin"
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      return await res.json();
+    }
+  };
+
+  async function getNativeShopifyCart() {
+    try {
+      return await nativeCartAdapter.getCart();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function notifyCartUpdate(freshCart, responseAnswer) {
+    try {
+      const cartObj = freshCart || (await getNativeShopifyCart());
+      const count = cartObj?.item_count ?? cartObj?.total_quantity ?? 0;
+
+      // 1a. Update count text inside .cart-count-bubble WITHOUT destroying child HTML.
+      //     Dawn theme uses <span aria-hidden="true">N</span> inside the div; setting
+      //     el.textContent on the *div* itself wipes out those spans so Dawn's own JS
+      //     can no longer read them. We target the inner spans directly instead.
+      document.querySelectorAll(".cart-count-bubble span[aria-hidden='true'], .cart-count-bubble span:first-child").forEach(el => {
+        if (el.closest(".ai-fab-wrapper, .ai-chat-panel")) return;
+        el.textContent = String(count);
+      });
+      document.querySelectorAll(".cart-count-bubble .visually-hidden").forEach(el => {
+        el.textContent = `${count} item${count !== 1 ? "s" : ""}`;
+      });
+
+      // 1b. Toggle visibility of the bubble container itself.
+      document.querySelectorAll(".cart-count-bubble").forEach(el => {
+        if (el.closest(".ai-fab-wrapper, .ai-chat-panel")) return;
+        if (count > 0) {
+          el.removeAttribute("hidden");
+          el.style.display = "";
+        } else {
+          el.setAttribute("hidden", "true");
+        }
+      });
+
+      // 1c. Generic selectors for non-Dawn themes.
+      document.querySelectorAll(
+        ".cart__count, [data-cart-count], .header__icon--cart .badge, " +
+        ".cart-count, .header__cart-count, cart-icon-bubble .icon-with-count__count"
+      ).forEach(el => {
+        el.textContent = String(count);
+        if (count > 0) { el.removeAttribute("hidden"); el.style.display = ""; }
+        else            { el.setAttribute("hidden", "true"); }
+      });
+
+      // 1d. Dawn Sections API — dynamically fetch sections that exist in the DOM
+      try {
+        const root = nativeCartAdapter.getRoot();
+        const validSections = ["cart-icon-bubble", "cart-drawer", "cart-notification"];
+        const sep = window.location.pathname.includes("?") ? "&" : "?";
+        
+        const fetchPromises = validSections.map(sec => 
+          fetch(`${window.location.pathname}${sep}sections=${sec}&t=${Date.now()}`, { credentials: "same-origin", cache: "no-store" })
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        );
+        
+        const results = await Promise.all(fetchPromises);
+        let sectData = {};
+        results.forEach(res => {
+          if (res) Object.assign(sectData, res);
+        });
+
+        if (Object.keys(sectData).length > 0) {
+
+            // Pass sectData to Dawn's web component if available
+            const cartDrawer = document.querySelector("cart-drawer");
+            let dawnHandled = false;
+            if (cartDrawer && typeof cartDrawer.renderContents === "function") {
+              try {
+                cartDrawer.renderContents({ sections: sectData });
+                dawnHandled = true;
+              } catch (e) {
+                console.warn("[AI Assistant] cartDrawer.renderContents error:", e);
+              }
+            }
+
+            const parser = new DOMParser();
+
+            // Replace cart-icon-bubble HTML
+            if (sectData["cart-icon-bubble"] && !dawnHandled) {
+              const newDoc = parser.parseFromString(sectData["cart-icon-bubble"], "text/html");
+              const newEl = newDoc.body.querySelector("cart-icon-bubble") || newDoc.body.querySelector(".cart-count-bubble");
+              const existEl = document.querySelector("cart-icon-bubble") || document.querySelector(".cart-count-bubble");
+              if (newEl && existEl) {
+                existEl.innerHTML = newEl.innerHTML;
+              }
+            }
+
+            // Replace cart-drawer HTML in DOM directly so drawer UI updates instantly
+            const drawerHtml = sectData["cart-drawer"] || sectData["cart-drawer-items"] || sectData["cart-notification"];
+            if (drawerHtml && !dawnHandled) {
+              const drawerDoc = parser.parseFromString(drawerHtml, "text/html");
+              const newDrawerInner = drawerDoc.querySelector(".drawer__inner") || drawerDoc.querySelector("#CartDrawer") || drawerDoc.querySelector("cart-drawer");
+              const existDrawerInner = document.querySelector("cart-drawer .drawer__inner") || document.querySelector("#CartDrawer") || document.querySelector("cart-drawer");
+              if (newDrawerInner && existDrawerInner) {
+                existDrawerInner.innerHTML = newDrawerInner.innerHTML;
+              }
+            }
+
+            if (cartDrawer) {
+              if (count === 0) {
+                cartDrawer.classList.add("is-empty");
+              } else {
+                cartDrawer.classList.remove("is-empty");
+              }
+            }
+          }
+      } catch (_sectionErr) {
+        console.warn("[AI Assistant] Section refresh failed:", _sectionErr);
+      }
+
+      // 2. Broadcast standard Shopify theme cart events.
+      document.dispatchEvent(new CustomEvent("ai-assistant:cart-updated", { detail: cartObj }));
+      document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true, detail: cartObj }));
+      document.dispatchEvent(new CustomEvent("theme:cart:reload", { bubbles: true, detail: cartObj }));
+      document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true, detail: cartObj }));
+      document.dispatchEvent(new CustomEvent("shopify:cart:change", { bubbles: true, detail: cartObj }));
+
+      // 3. Trigger Dawn & modern OS 2.0 Web Component drawers.
+      try {
+        const cartItems = document.querySelector("cart-items");
+        if (cartItems && typeof cartItems.onCartUpdate === "function") {
+          cartItems.onCartUpdate();
+        }
+      } catch (e) {}
+
+      // 4. If currently on the /cart page, reload so server-side Liquid re-renders the table.
+      const pathname = window.location.pathname.replace(/\/$/, "");
+      if (pathname === "/cart") {
+        const textToSave = responseAnswer || "Updated your cart.";
+        try {
+          sessionStorage.setItem("ai_nav_restore", JSON.stringify({
+            answer: textToSave,
+            ts: Date.now(),
+            speak: false
+          }));
+        } catch (e) {}
+        setTrackedTimeout(() => {
+          window.location.reload();
+        }, 1200);
+      }
+    } catch (err) {
+      console.error("[AI Assistant] notifyCartUpdate error:", err);
+    }
+  }
+
+
+  function sanitizeCartContext(rawCart) {
+    if (!rawCart || typeof rawCart !== "object") return null;
+    return {
+      item_count: rawCart.item_count || 0,
+      items: Array.isArray(rawCart.items) ? rawCart.items.map(item => {
+        const opts = {};
+        if (Array.isArray(item.options_with_values)) {
+          item.options_with_values.forEach(opt => { opts[opt.name] = opt.value; });
+        } else if (item.options && typeof item.options === "object") {
+          Object.assign(opts, item.options);
+        }
+        return {
+          key: item.key || String(item.id || ""),
+          variant_id: item.variant_id || item.id,
+          product_title: item.product_title || item.title || "",
+          variant_title: item.variant_title || "",
+          quantity: item.quantity || 1,
+          options: opts
+        };
+      }) : []
+    };
+  }
+
+  async function fetchStorefrontProduct(handle) {
+    if (!handle) return null;
+    try {
+      const root = nativeCartAdapter.getRoot();
+      const res = await fetch(`${root}products/${handle}.js`, { credentials: "same-origin" });
+      if (res.ok) return await res.json();
+    } catch (e) {}
+    return null;
+  }
+
+  function buildVariantOptionMap(product, variant) {
+    const result = {};
+    if (!product || !product.options || !variant || !variant.options) return result;
+    product.options.forEach((option, index) => {
+      const optName = typeof option === "string" ? option : (option.name || `Option${index + 1}`);
+      result[optName] = variant.options[index];
+    });
+    return result;
+  }
+
+  function resolveVariantStrict(product, requestedOptions) {
+    if (!product || !product.variants || !Array.isArray(product.variants)) {
+      return { variant: null, error: "PRODUCT_NOT_PUBLISHED" };
+    }
+
+    const requestedKeys = Object.keys(requestedOptions || {});
+    const matchingVariants = product.variants.filter(variant => {
+      const optMap = buildVariantOptionMap(product, variant);
+      for (const key of requestedKeys) {
+        const reqVal = String(requestedOptions[key] || "").trim().toLowerCase();
+        const matchedOptKey = Object.keys(optMap).find(k => k.trim().toLowerCase() === key.trim().toLowerCase());
+        if (!matchedOptKey) return false;
+        const actualVal = String(optMap[matchedOptKey] || "").trim().toLowerCase();
+        if (reqVal !== actualVal) return false;
+      }
+      return true;
+    });
+
+    if (matchingVariants.length === 0) {
+      if (product.variants.length >= 250) {
+        return { variant: null, error: "VARIANT_RESOLUTION_INCOMPLETE" };
+      }
+      return { variant: null, error: "CART_VARIANT_UNAVAILABLE" };
+    }
+
+    if (matchingVariants.length > 1) {
+      const requiredOptCount = Array.isArray(product.options) ? product.options.length : 0;
+      if (requestedKeys.length < requiredOptCount || product.variants.length >= 250) {
+        return { variant: null, error: "VARIANT_RESOLUTION_INCOMPLETE" };
+      }
+    }
+
+    const targetVariant = matchingVariants[0];
+    const isAvail = targetVariant.available === true || targetVariant.availableForSale === true;
+    if (!isAvail) {
+      return { variant: null, error: "CART_VARIANT_UNAVAILABLE" };
+    }
+
+    return { variant: targetVariant, error: null };
+  }
+
+  function findExactCartLine(cart, criteria) {
+    if (!cart || !Array.isArray(cart.items)) return null;
+
+    const targetLineKey = criteria.lineKey ? String(criteria.lineKey) : null;
+    const targetVarId = criteria.variantId ? String(criteria.variantId) : null;
+
+    for (const line of cart.items) {
+      const lineKey = line.key ? String(line.key) : String(line.id || "");
+      const lineVarId = String(line.variant_id || line.id || "");
+
+      if (targetLineKey && lineKey === targetLineKey) {
+        return line;
+      }
+
+      if (targetVarId && (lineVarId === targetVarId || lineVarId.split("/").pop() === targetVarId.split("/").pop())) {
+        if (criteria.selectedOptions) {
+          const lineOpts = {};
+          if (Array.isArray(line.options_with_values)) {
+            line.options_with_values.forEach(o => { lineOpts[o.name.toLowerCase()] = String(o.value).toLowerCase(); });
+          }
+          let allMatch = true;
+          for (const [k, v] of Object.entries(criteria.selectedOptions)) {
+            if (lineOpts[k.toLowerCase()] && lineOpts[k.toLowerCase()] !== String(v).toLowerCase()) {
+              allMatch = false;
+              break;
+            }
+          }
+          if (allMatch) return line;
+        } else {
+          return line;
+        }
+      }
+    }
+    return null;
+  }
+
+  function getExactLineQuantity(cart, target) {
+    if (!cart || !Array.isArray(cart.items)) return 0;
+    let targetVarId = null;
+    let targetLineKey = null;
+
+    if (typeof target === "object" && target !== null) {
+      targetVarId = target.variantId || target.id || target.variant_id;
+      targetLineKey = target.lineKey || target.key;
+    } else if (typeof target === "string" || typeof target === "number") {
+      targetVarId = String(target);
+    }
+
+    const line = findExactCartLine(cart, { lineKey: targetLineKey, variantId: targetVarId });
+    return line ? (line.quantity || 0) : 0;
+  }
+
+  // ── Persist completed cart action IDs across page refreshes (v2.1.12) ──
+  // Without persistence, a refresh clears the in-memory Set and the backend
+  // (which still has a "pending" action for <45 s) would re-send
+  // requires_client_action, causing the item to be added a second time.
+  function _loadCompletedCartActionIds() {
+    try {
+      const raw = sessionStorage.getItem("ai_completed_cart_actions");
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr);
+      }
+    } catch (e) {}
+    return new Set();
+  }
+  function _saveCompletedCartActionId(id) {
+    try {
+      const existing = _loadCompletedCartActionIds();
+      existing.add(id);
+      // Only keep last 50 IDs to avoid unbounded growth
+      const arr = [...existing].slice(-50);
+      sessionStorage.setItem("ai_completed_cart_actions", JSON.stringify(arr));
+    } catch (e) {}
+  }
+  const completedCartActionIds = _loadCompletedCartActionIds();
+  let cartActionInFlight = false;
+
+  // Monotonic sequence counters for request ordering & stale response suppression
+  let _reqSeqNum = 0;
+  let _latestHandledSeqNum = 0;
+
+  // Global handles for wake audio, AudioContext, and sequence state
+  let audioContext = null;
+  let audioUnlocked = false;
+
+  let wakeSequenceRunning = false;
+  let queryRecognitionActive = false;
+  let queryRecognition = null;
+  let isProcessing = false;
+  let isSpeaking = false;
+  let _currentPlayingAudio = null;
+
+  // TTS State Handles (v2.1.8)
+  let activeTtsAudio = null;
+  let ttsAbortController = null;
+  let settleActiveTts = null;
+
+  // Auto-Listen Timer Handle (v2.1.10)
+  let autoListenTimer = null;
+
+  // Timers registry for clean destruction
+  const activeTimers = new Set();
+  function setTrackedTimeout(fn, ms) {
+    const timer = setTimeout(() => {
+      activeTimers.delete(timer);
+      fn();
+    }, ms);
+    activeTimers.add(timer);
+    return timer;
+  }
+  function clearAllTurnTimers() {
+    for (const t of activeTimers) {
+      clearTimeout(t);
+    }
+    activeTimers.clear();
+  }
+
+  // ===============================================================
+  // LIFECYCLE & STATE OWNERSHIP MANAGEMENT (v2.1.5)
+  // ===============================================================
+  let microphoneAccessConfirmed = false;
+  let handsFreeEnabled = false;
   try {
-    const res = await fetch("/cart.js");
-    if (res.ok) return await res.json();
+    handsFreeEnabled = localStorage.getItem("ai_hands_free_enabled") === "true";
   } catch (e) {}
-  return null;
-}
+  let handsFreeEnableInFlight = false;
 
+  let wakeSessionId = 0;
+  let wakeRecognitionActive = false;
+  let wakeRecognition = null;
+  let wakeRestartTimer = null;
+  let wakeRestartAllowed = true;
+  let stabilityTimer = null;
 
+  let lastWakeActivationAt = 0;
+  const WAKE_ACTIVATION_COOLDOWN_MS = 1500;
+  const WAKE_RESTART_DELAYS = [250, 500, 1000, 2000, 3000];
+  let wakeRestartAttempt = 0;
 
-// ===============================================================
-// SHARED: RENDER API RESPONSE (used by both voice + text input)
-// ===============================================================
+  let panelOpen = false;
+  let panelManuallyClosed = false;
+  let panelLifecycleId = 0;
+  let activeTurnId = 0;
+  let finalizedTurnId = null;
 
+  let requestAbortController = null;
+  let listenerController = null;
+  let destroyed = false;
 
-// Monotonic sequence counters for request ordering & stale response suppression
-let _reqSeqNum = 0;
-let _latestHandledSeqNum = 0;
+  let assistantState = "idle";
+  let microphonePermission = "prompt";
+  let microphoneHardError = null;
 
-// Global handle for currently playing response audio
-let _currentPlayingAudio = null;
-
-function stopAllAudioPlayback() {
-  // 1. Stop HTML5 Audio playback immediately
-  if (_currentPlayingAudio) {
-    try {
-      _currentPlayingAudio.pause();
-      _currentPlayingAudio.currentTime = 0;
-      _currentPlayingAudio.src = "";
-    } catch (e) {}
-    _currentPlayingAudio = null;
+  function beginAssistantTurn() {
+    activeTurnId += 1;
+    finalizedTurnId = null;
+    if (requestAbortController) {
+      try { requestAbortController.abort("new-turn-started"); } catch (e) {}
+    }
+    requestAbortController = new AbortController();
+    return activeTurnId;
   }
 
-  document.querySelectorAll("audio").forEach(a => {
-    try {
-      a.pause();
-      a.currentTime = 0;
-      a.src = "";
-    } catch (e) {}
-  });
+  function cancelActiveTurn(reason = "user-action") {
+    activeTurnId += 1;
+    finalizedTurnId = null;
 
-  // 2. Stop Web Speech Synthesis immediately
-  if ('speechSynthesis' in window) {
-    try {
-      window.speechSynthesis.cancel();
-    } catch (e) {}
+    if (requestAbortController) {
+      try { requestAbortController.abort(reason); } catch (e) {}
+      requestAbortController = null;
+    }
+
+    stopQueryRecognition();
+    stopWakeChime();
+    cancelAssistantTts();
+    clearAllTurnTimers();
+
+    queryRecognitionActive = false;
+    isProcessing = false;
+    isSpeaking = false;
+    wakeSequenceRunning = false;
   }
-}
 
+  function destroyWidget() {
+    destroyed = true;
+    logWakeEvent("destroyWidget invoked");
 
+    if (listenerController) {
+      try { listenerController.abort(); } catch (e) {}
+      listenerController = null;
+    }
 
-// ── Browser TTS via Web Speech Synthesis ─────────────────
-let _activeTtsCallback = null;
+    activeTurnId += 1;
 
-function speakTextWithBrowserSpeech(text, status, onEndCallback = null) {
-  if (onEndCallback) _activeTtsCallback = onEndCallback;
-  try {
+    stopWakeRecognition({ reason: "widget-destroyed", allowRestart: false });
+    stopQueryRecognition();
+    stopWakeChime();
+    cancelAssistantTts();
+    clearAllTurnTimers();
+
+    queryRecognitionActive = false;
+    isProcessing = false;
+    isSpeaking = false;
+    wakeSequenceRunning = false;
+  }
+
+  function hideFloatingFab(rootNode = document) {
+    // v2.1.10: Floating FAB must remain visible & interactive at all times
+    showFloatingFab(rootNode);
+  }
+
+  function showFloatingFab(rootNode = document) {
+    const wrapper = rootNode?.classList?.contains("ai-fab-wrapper") ? rootNode : (_q(".ai-fab-wrapper", rootNode) || _q(".ai-fab-wrapper"));
+    if (!wrapper) return;
+    const fabWrap = wrapper.querySelector(".ai-fab-btn-wrap") || wrapper;
+    const fab = wrapper.querySelector(".ai-fab-btn");
+    if (fabWrap) {
+      fabWrap.classList.remove("ai-fab-btn-wrap--hidden");
+      fabWrap.setAttribute("aria-hidden", "false");
+    }
+    if (fab) {
+      fab.disabled = false;
+      try { fab.removeAttribute("tabindex"); } catch (e) {}
+      fab.setAttribute("aria-expanded", panelOpen ? "true" : "false");
+    }
+  }
+
+  function openAssistantPanel(source = "user") {
+    panelLifecycleId += 1;
+    panelManuallyClosed = false;
+    panelOpen = true;
+
+    showFloatingFab();
+
+    const root = getCanonicalRoot();
+    if (root) {
+      _openPanel(root);
+    }
+  }
+
+  async function closeAssistantPanel(options = {}) {
+    const { source = "user", cancelCurrentTurn = true } = options;
+    panelLifecycleId += 1;
+    panelManuallyClosed = (source !== "auto-complete" && source !== "auto-close" && source !== "system" && source !== "voice-close");
+    panelOpen = false;
+
+    showFloatingFab();
+
+    const root = getCanonicalRoot();
+    if (root) {
+      _closePanel(root);
+    }
+
+    if (cancelCurrentTurn) {
+      cancelActiveTurn("panel-closed");
+    }
+
+    if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+      const wakeStarted = await startWakeRecognitionSafely(root || document);
+      if (!wakeStarted && shouldRestartWakeRecognition()) {
+        scheduleWakeRecognitionRestart(wakeSessionId, root || document);
+      }
+    } else {
+      transitionAssistantState(AssistantState.IDLE, root || document);
+    }
+  }
+
+  function getStorePreferenceKey() {
+    const shopDomain = window.Shopify?.shop || "default";
+    const normalizedShop = String(shopDomain || "").trim().toLowerCase();
+    return `ai-wake-sound:${normalizedShop}`;
+  }
+
+  function isWakeSoundEnabled() {
+    try {
+      return localStorage.getItem(getStorePreferenceKey()) !== "false";
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function getSharedAudioContext() {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!audioContext || audioContext.state === "closed") {
+      audioContext = new AudioCtx();
+    }
+    return audioContext;
+  }
+
+  function unlockAssistantAudio() {
+    try {
+      const ctx = getSharedAudioContext();
+      if (ctx) {
+        if (ctx.state === "suspended") {
+          ctx.resume().catch(() => {});
+        }
+        const buf = ctx.createBuffer(1, 1, 22050);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start(0);
+      }
+
+      if ('speechSynthesis' in window) {
+        if (window.speechSynthesis.paused) {
+          try { window.speechSynthesis.resume(); } catch(e) {}
+        }
+        try { window.speechSynthesis.getVoices(); } catch(e) {}
+      }
+
+      audioUnlocked = true;
+      logWakeEvent("audio context state=" + (ctx ? ctx.state : "none"));
+    } catch (error) {
+      audioUnlocked = false;
+    }
+  }
+
+  (function setupAutoAudioUnlock() {
+    const unlock = () => {
+      unlockAssistantAudio();
+    };
+    ["click", "touchstart", "pointerdown", "keydown"].forEach(evt => {
+      document.addEventListener(evt, unlock, { capture: true, passive: true });
+    });
+  })();
+
+  // ── Cancellable Web Audio Chime Synthesizer (v2.1.5 Smooth Master) ──
+  let activeChimeNodes = [];
+
+  function stopWakeChime() {
+    for (const node of activeChimeNodes) {
+      try { node.stop?.(); } catch (e) {}
+      try { node.disconnect?.(); } catch (e) {}
+    }
+    activeChimeNodes = [];
+  }
+
+  const DEFAULT_WAKE_CHIME_GAIN = 0.09;
+  const MAX_WAKE_CHIME_GAIN = 0.12;
+
+  function playGeneratedWakeTone() {
+    if (!isWakeSoundEnabled()) {
+      return Promise.resolve({ played: false, reason: "sound-disabled" });
+    }
+
+    return new Promise((resolve) => {
+      (async () => {
+        try {
+          stopWakeChime();
+          const ctx = getSharedAudioContext();
+          if (!ctx) { resolve({ played: false, reason: "no-audio-context" }); return; }
+          if (ctx.state === "suspended") {
+            try { await ctx.resume(); } catch(e) {}
+          }
+
+          const start = ctx.currentTime;
+          const duration = 0.55;
+          const end = start + duration;
+
+          const configuredWakeGain = typeof window !== "undefined" ? window.AI_WAKE_CHIME_GAIN : null;
+          const wakeGain = Math.min(
+            Math.max(configuredWakeGain || DEFAULT_WAKE_CHIME_GAIN, 0.02),
+            MAX_WAKE_CHIME_GAIN
+          );
+
+          // Dynamics Compressor to prevent clipping & maintain smooth loudness
+          const compressor = ctx.createDynamicsCompressor();
+          if (compressor.threshold) compressor.threshold.setValueAtTime(-18, start);
+          if (compressor.knee) compressor.knee.setValueAtTime(20, start);
+          if (compressor.ratio) compressor.ratio.setValueAtTime(4, start);
+          if (compressor.attack) compressor.attack.setValueAtTime(0.003, start);
+          if (compressor.release) compressor.release.setValueAtTime(0.15, start);
+          compressor.connect(ctx.destination);
+          activeChimeNodes.push(compressor);
+
+          // Low-pass filter at 2800 Hz for warm smooth tone
+          const filter = ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.setValueAtTime(2800, start);
+          filter.connect(compressor);
+          activeChimeNodes.push(filter);
+
+          // Master gain envelope (clamped peak wakeGain ~0.09)
+          const masterGain = ctx.createGain();
+          masterGain.gain.setValueAtTime(0.0001, start);
+          masterGain.gain.exponentialRampToValueAtTime(wakeGain, start + 0.04);
+          masterGain.gain.exponentialRampToValueAtTime(0.0001, end);
+          masterGain.connect(filter);
+          activeChimeNodes.push(masterGain);
+
+          // Note 1: C5 (523.25 Hz) from 0.00s -> 0.30s
+          const osc1 = ctx.createOscillator();
+          osc1.type = "sine";
+          osc1.frequency.setValueAtTime(523.25, start);
+          osc1.connect(masterGain);
+          osc1.start(start);
+          osc1.stop(start + 0.30);
+          activeChimeNodes.push(osc1);
+
+          // Note 2: E5 (659.25 Hz) from 0.14s -> 0.52s
+          const osc2 = ctx.createOscillator();
+          osc2.type = "sine";
+          osc2.frequency.setValueAtTime(659.25, start + 0.14);
+          osc2.connect(masterGain);
+          osc2.start(start + 0.14);
+          osc2.stop(end);
+          activeChimeNodes.push(osc2);
+
+          setTrackedTimeout(() => {
+            stopWakeChime();
+            resolve({ played: true, source: "web-audio-chime" });
+          }, 550);
+        } catch (err) {
+          stopWakeChime();
+          resolve({ played: false, reason: err.message });
+        }
+      })();
+    });
+  }
+
+  async function playSmoothWakeChimeWithTimeout() {
+    logWakeEvent("smooth chime started");
+    let chimeTimer = null;
+    try {
+      await Promise.race([
+        playGeneratedWakeTone(),
+        new Promise((_, reject) => {
+          chimeTimer = setTrackedTimeout(() => reject(new Error("WAKE_CHIME_TIMEOUT")), 900);
+        })
+      ]);
+      logWakeEvent("smooth chime completed");
+    } catch (error) {
+      logWakeEvent("smooth chime warning", error?.message || error);
+    } finally {
+      if (chimeTimer) clearTimeout(chimeTimer);
+      stopWakeChime();
+    }
+  }
+
+  function stopAllAudioPlayback() {
+    stopWakeChime();
+    if (_currentPlayingAudio) {
+      try {
+        _currentPlayingAudio.pause();
+        _currentPlayingAudio.currentTime = 0;
+      } catch (e) {}
+      _currentPlayingAudio = null;
+    }
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+    }
+  }
+
+  function cancelAssistantTts(reason = "cancelled") {
+    if (ttsAbortController) {
+      try { ttsAbortController.abort(reason); } catch (e) {}
+      ttsAbortController = null;
+    }
+
+    if (activeTtsAudio) {
+      try { activeTtsAudio.pause(); activeTtsAudio.currentTime = 0; } catch (e) {}
+      activeTtsAudio = null;
+    }
+
+    stopAllAudioPlayback();
+
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+    }
+
+    if (typeof settleActiveTts === "function") {
+      try {
+        settleActiveTts({
+          status: "cancelled",
+          reason
+        });
+      } catch (e) {}
+      settleActiveTts = null;
+    }
+
+    isSpeaking = false;
+  }
+
+  // ── Bounded TTS Engine ──────────────────────────────────────────
+  async function speakAssistantResponse(data, turnId, status, rootNode = document) {
+    if (turnId !== activeTurnId || panelManuallyClosed) return;
+
+    const answerText = data.answer || "";
+    const audioB64 = data.audio || null;
+
+    if (!answerText && !audioB64) return;
+
+    stopAllAudioPlayback();
+    isSpeaking = true;
+    transitionAssistantState(AssistantState.SPEAKING, rootNode);
+
+    if (audioB64) {
+      let ttsAudio = null;
+      let ttsTimer = null;
+      try {
+        await Promise.race([
+          new Promise((resolve, reject) => {
+            if (turnId !== activeTurnId || panelManuallyClosed) { reject(new Error("STALE_TURN")); return; }
+            ttsAudio = new Audio("data:audio/mp3;base64," + audioB64);
+            activeTtsAudio = ttsAudio;
+            _currentPlayingAudio = ttsAudio;
+            ttsAudio.onplay = () => {
+              if (status && turnId === activeTurnId && !panelManuallyClosed) status.textContent = "Assistant is speaking…";
+            };
+            ttsAudio.onended = () => resolve("ended");
+            ttsAudio.onerror = (e) => reject(e || new Error("AUDIO_PLAYBACK_ERROR"));
+            ttsAudio.play().catch(reject);
+          }),
+          new Promise((_, reject) => {
+            ttsTimer = setTrackedTimeout(() => reject(new Error("TTS_TIMEOUT")), 15000);
+          })
+        ]);
+      } catch (err) {
+        console.warn("[TTS] ElevenLabs audio ended or failed; falling back to browser speech", err?.message);
+        if (turnId === activeTurnId && !panelManuallyClosed) {
+          await speakTextWithBrowserSpeech(answerText, status, turnId);
+        }
+      } finally {
+        if (ttsTimer) clearTimeout(ttsTimer);
+        if (ttsAudio) {
+          try { ttsAudio.pause(); ttsAudio.currentTime = 0; } catch (e) {}
+        }
+        activeTtsAudio = null;
+        _currentPlayingAudio = null;
+        isSpeaking = false;
+      }
+    } else if (answerText) {
+      await speakTextWithBrowserSpeech(answerText, status, turnId);
+      isSpeaking = false;
+    }
+  }
+
+  async function speakTextWithBrowserSpeech(text, status, turnId) {
+    if (turnId !== activeTurnId || panelManuallyClosed) return;
+
     if (!('speechSynthesis' in window)) {
-      if (onEndCallback) setTimeout(onEndCallback, 2500);
+      await delay(1000);
       return;
     }
-    stopAllAudioPlayback();
 
     const cleanText = text
       .replace(/\*\*(.*?)\*\*/g, "$1")
@@ -98,1696 +887,1931 @@ function speakTextWithBrowserSpeech(text, status, onEndCallback = null) {
       .replace(/\s+/g, " ")
       .trim();
 
-    if (!cleanText) {
-      if (onEndCallback) onEndCallback();
+    if (!cleanText) return;
+
+    let failsafeTimer = null;
+    let utterance = null;
+
+    try {
+      await Promise.race([
+        new Promise((resolve) => {
+          if (turnId !== activeTurnId || panelManuallyClosed) { resolve("stale"); return; }
+          utterance = new SpeechSynthesisUtterance(cleanText);
+          utterance.lang = "en-US";
+          utterance.rate = 1.0;
+          utterance.pitch = 1.0;
+
+          const voices = window.speechSynthesis.getVoices();
+          const preferredVoice = voices.find(v =>
+            v.lang.startsWith("en") && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Daniel"))
+          ) || voices.find(v => v.lang.startsWith("en"));
+
+          if (preferredVoice) utterance.voice = preferredVoice;
+
+          utterance.onstart = () => {
+            if (status && turnId === activeTurnId && !panelManuallyClosed) status.textContent = "Assistant is speaking…";
+          };
+          utterance.onend = () => resolve("ended");
+          utterance.onerror = () => resolve("error");
+
+          if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+          window.speechSynthesis.speak(utterance);
+        }),
+        new Promise((resolve) => {
+          const wordsCount = cleanText.split(/\s+/).length;
+          const durationMs = Math.min(45000, Math.max(15000, Math.ceil((wordsCount / 1.8) * 1000) + 5000));
+          failsafeTimer = setTrackedTimeout(() => resolve("timeout"), durationMs);
+        })
+      ]);
+    } catch (e) {
+      console.warn("[TTS] Web Speech Synthesis error:", e);
+    } finally {
+      if (failsafeTimer) clearTimeout(failsafeTimer);
+      if (turnId !== activeTurnId || panelManuallyClosed) {
+        if (window.speechSynthesis && window.speechSynthesis.speaking) {
+          try { window.speechSynthesis.cancel(); } catch (e) {}
+        }
+      }
+    }
+  }
+
+  // ── Shared UI Helper Functions ────────────────────────────────────
+  function _q(selector, rootNode = document) {
+    return rootNode.querySelector(selector);
+  }
+
+  function _setStatus(text, rootNode = document) {
+    const el = _q(".ai-assistant-status", rootNode);
+    if (el) el.textContent = text;
+  }
+
+  function _setCustomerTranscription(text, rootNode = document) {
+    const el = _q(".ai-customer-transcription", rootNode);
+    if (!el) return;
+    if (!text) {
+      el.style.display = "none";
+      el.textContent = "";
+    } else {
+      el.style.display = "block";
+      el.textContent = text;
+    }
+  }
+
+  function _clearCustomerTranscription(rootNode = document) {
+    _setCustomerTranscription("", rootNode);
+  }
+
+  function _hideSuggestionChips(rootNode = document) {
+    const el = _q(".ai-suggestion-chips", rootNode);
+    if (el) el.style.display = "none";
+  }
+
+  const AssistantState = Object.freeze({
+    IDLE: "idle",
+    WAKE_READY: "wake-ready",
+    WAKING: "waking",
+    LISTENING: "listening",
+    PROCESSING: "processing",
+    SPEAKING: "speaking",
+    SUCCESS: "success",
+    ERROR: "error"
+  });
+
+  function transitionAssistantState(newState, rootNode = document) {
+    if (newState === AssistantState.IDLE && handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+      newState = AssistantState.WAKE_READY;
+    }
+
+    assistantState = newState;
+    const wrapper = rootNode?.classList?.contains("ai-fab-wrapper") ? rootNode : (_q(".ai-fab-wrapper", rootNode) || _q(".ai-fab-wrapper") || document);
+    const dots = wrapper?.querySelectorAll ? wrapper.querySelectorAll(".ai-ww-dot") : [];
+    const orb = _q(".ai-assistant-button", wrapper);
+    const status = _q(".ai-assistant-status", wrapper);
+
+    let dotClass = "disabled";
+    let orbClass = "idle";
+    let statusMsg = "Tap the microphone to speak";
+
+    switch (newState) {
+      case AssistantState.IDLE:
+        dotClass = "disabled";
+        orbClass = "idle";
+        statusMsg = "Tap the microphone to speak";
+        break;
+      case AssistantState.WAKE_READY:
+        dotClass = "standby";
+        orbClass = "wake-ready";
+        statusMsg = "Say “Hey Assistant” or tap to speak";
+        break;
+      case AssistantState.WAKING:
+        dotClass = "standby";
+        orbClass = "listening";
+        statusMsg = "Hey! How can I help?";
+        break;
+      case AssistantState.LISTENING:
+        dotClass = "listening";
+        orbClass = "listening";
+        statusMsg = "Listening…";
+        break;
+      case AssistantState.PROCESSING:
+        dotClass = "processing";
+        orbClass = "processing";
+        statusMsg = "Finding the best options…";
+        break;
+      case AssistantState.SPEAKING:
+        dotClass = "speaking";
+        orbClass = "speaking";
+        statusMsg = "Assistant is speaking…";
+        break;
+      case AssistantState.SUCCESS:
+        dotClass = "standby";
+        orbClass = "wake-ready";
+        statusMsg = "Done!";
+        break;
+      case AssistantState.ERROR:
+        dotClass = "error";
+        orbClass = "error";
+        statusMsg = "⚠️ Microphone error or connection issue. Tap to retry.";
+        break;
+    }
+
+    if (dots && dots.length) {
+      dots.forEach(d => {
+        d.className = `ai-ww-dot ai-ww-dot--${dotClass}`;
+      });
+    }
+    if (orb) orb.className = `ai-assistant-button ai-orb--${orbClass}`;
+    const fabBtn = wrapper?.querySelector ? wrapper.querySelector(".ai-fab-btn") : null;
+    if (fabBtn) fabBtn.className = `ai-fab-btn ai-orb--${orbClass}`;
+    if (status && statusMsg && !status.innerHTML.includes("<button")) status.textContent = statusMsg;
+  }
+
+  function handleMicError(err, rootNode = document) {
+    const errName = err?.name || err?.error || "";
+    let message = "Microphone unavailable. Please check permissions.";
+
+    if (errName === "NotAllowedError" || errName === "PermissionDeniedError" || errName === "not-allowed" || errName === "service-not-allowed" || errName === "permission-denied") {
+      microphoneAccessConfirmed = false;
+      microphonePermission = "denied";
+      microphoneHardError = "NotAllowedError";
+      message = "Microphone blocked. Click 🔒 in address bar to allow mic access.";
+    } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
+      microphoneAccessConfirmed = false;
+      microphoneHardError = "NotFoundError";
+      message = "No microphone found on this device.";
+    } else if (errName === "NotReadableError" || errName === "TrackStartError" || errName === "audio-capture") {
+      microphoneHardError = "NotReadableError";
+      message = "Microphone is busy in another application.";
+    } else if (errName === "SecurityError") {
+      microphoneAccessConfirmed = false;
+      microphoneHardError = "SecurityError";
+      message = "Microphone access requires HTTPS.";
+    } else if (errName === "AbortError") {
+      microphoneHardError = "AbortError";
+      message = "Microphone request interrupted.";
+    }
+
+    transitionAssistantState(AssistantState.ERROR, rootNode);
+    const status = _q(".ai-assistant-status", rootNode);
+    if (status) {
+      status.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:middle;margin-right:4px;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>${message} <button type="button" class="ai-retry-mic-btn" style="background:none;border:none;color:#3154f5;text-decoration:underline;cursor:pointer;font-weight:600;padding:0;margin-left:4px;">Retry</button></span>`;
+      const retryBtn = status.querySelector(".ai-retry-mic-btn");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          microphoneHardError = null;
+          enableHandsFreeFromUserGesture(rootNode);
+        });
+      }
+    }
+  }
+
+  function normalizeWakeText(value) {
+    const input = String(value || "").toLowerCase();
+    try {
+      return input
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    } catch (e) {
+      return input
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+
+  function containsWakePhrase(transcript) {
+    const value = normalizeWakeText(transcript);
+    return [
+      "hey assistant",
+      "hi assistant",
+      "hey assistance",
+      "okay assistant",
+      "ok assistant",
+      "hey shop",
+      "hey ai",
+      "assistant",
+      "assistance",
+      "assistent"
+    ].some((phrase) => value.includes(phrase));
+  }
+
+  // ── Authoritative State Finalizer ─────────────────────────────────
+  async function finalizeAssistantTurn(options = {}, rootNode = document) {
+    const {
+      turnId,
+      conversationComplete = false,
+      requiresInput = false,
+      autoListen = false
+    } = options;
+
+    if (typeof turnId === "number") {
+      if (turnId !== activeTurnId) {
+        return;
+      }
+      if (finalizedTurnId === turnId) {
+        return;
+      }
+      finalizedTurnId = turnId;
+    }
+
+    if (panelManuallyClosed) {
+      logWakeEvent("returned to wake-ready after turn (panel manually closed)");
+      if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+        startWakeRecognitionSafely(rootNode);
+      }
       return;
     }
 
-    const doSpeak = () => {
-      const utt = new SpeechSynthesisUtterance(cleanText);
-      utt.lang = "en-US";
-      utt.rate = 1.0;
-      utt.pitch = 1.0;
-      utt.volume = 1.0;
+    stopWakeChime();
+    stopAllAudioPlayback();
+    stopQueryRecognition();
 
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find(v =>
-        v.lang.startsWith("en") &&
-        (v.name.includes("Samantha") || v.name.includes("Daniel") ||
-         v.name.includes("Karen") || v.name.includes("Moira") ||
-         v.name.includes("Google US") || v.name.includes("Google UK") ||
-         v.name.includes("Google") || v.name.includes("Natural"))
-      ) || voices.find(v => v.lang === "en-US")
-        || voices.find(v => v.lang.startsWith("en"));
-      if (preferred) utt.voice = preferred;
+    wakeSequenceRunning = false;
+    queryRecognitionActive = false;
+    isProcessing = false;
+    isSpeaking = false;
 
-      const finishTTS = () => {
-        if (status) {
-          status.textContent = isHandsFreeEnabled()
-            ? 'Say "Hey Assistant" to start'
-            : 'Tap the microphone to speak';
-        }
-        if (_activeTtsCallback) {
-          const cb = _activeTtsCallback;
-          _activeTtsCallback = null;
-          try { cb(); } catch(e) {}
-        }
-      };
+    const wrapper = rootNode?.classList?.contains("ai-fab-wrapper") ? rootNode : _q(".ai-fab-wrapper") || document;
+    const checkbox = wrapper?.querySelector?.(".ai-ww-enable-btn");
+    if (checkbox) checkbox.checked = handsFreeEnabled;
 
-      if (status) {
-        utt.onstart = () => { status.textContent = "Speaking response…"; };
+    if (requiresInput && autoListen) {
+      openAssistantPanel("auto-listen");
+      transitionAssistantState(AssistantState.LISTENING, wrapper);
+      startQueryRecognitionSafely({ turnId: beginAssistantTurn() }, wrapper);
+      return;
+    }
+
+    if (conversationComplete) {
+      if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+        logWakeEvent("returned to wake-ready");
+        startWakeRecognitionSafely(wrapper);
+      } else {
+        transitionAssistantState(AssistantState.IDLE, wrapper);
       }
-      utt.onend   = finishTTS;
-      utt.onerror = finishTTS;
+      return;
+    }
 
-      window.speechSynthesis.speak(utt);
-    };
-
-    if (window.speechSynthesis.getVoices().length > 0) {
-      doSpeak();
+    if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+      logWakeEvent("returned to wake-ready");
+      startWakeRecognitionSafely(wrapper);
     } else {
-      setTimeout(doSpeak, 250);
+      transitionAssistantState(AssistantState.IDLE, wrapper);
     }
-  } catch (e) {
-    console.warn("[AI Assistant] speakText error:", e);
-    if (onEndCallback) setTimeout(onEndCallback, 2500);
-  }
-}
-
-// Preload voices and unlock speechSynthesis on first user gesture
-(function() {
-  if (!('speechSynthesis' in window)) return;
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
-
-  let _unlocked = false;
-  const unlock = () => {
-    if (_unlocked) return;
-    _unlocked = true;
-    const u = new SpeechSynthesisUtterance(" ");
-    u.volume = 0; u.rate = 10;
-    try { window.speechSynthesis.speak(u); } catch(e) {}
-  };
-  ["click","keydown","touchstart","pointerdown"].forEach(e =>
-    document.addEventListener(e, unlock, { passive: true })
-  );
-})();
-
-
-function isHandsFreeEnabled() {
-  return !!(window.AiWakeWord && window.AiWakeWord.isEnabled && window.AiWakeWord.isEnabled());
-}
-
-function _q(sel) {
-  if (typeof _wrapper !== "undefined" && _wrapper) return _wrapper.querySelector(sel);
-  const wrapper = document.querySelector(".ai-fab-wrapper") || document.body;
-  return wrapper ? wrapper.querySelector(sel) : null;
-}
-
-function _setCustomerTranscription(text) {
-  const el = _q(".ai-customer-transcription");
-  if (!el) return;
-  if (text) {
-    el.style.display = "block";
-    el.textContent = text;
-  } else {
-    el.style.display = "none";
-    el.textContent = "";
-  }
-}
-
-function _clearCustomerTranscription() {
-  _setCustomerTranscription(null);
-}
-
-function _hideSuggestionChips() {
-  const chips = _q(".ai-suggestion-chips");
-  if (chips) chips.style.display = "none";
-}
-
-function _showSuggestionChips() {
-  const chips = _q(".ai-suggestion-chips");
-  if (chips) chips.style.display = "flex";
-}
-
-function renderApiResponse(data, responseBox, status) {
-
-  stopAllAudioPlayback();
-  console.log("API response:", data);
-  _clearCustomerTranscription();
-
-  if (status) {
-    status.textContent = isHandsFreeEnabled()
-      ? 'Say "Hey Assistant" to start'
-      : 'Tap the microphone to speak';
-  }
-  if (!responseBox) return;
-
-  // Single dynamic response area — replace existing content cleanly
-  responseBox.style.display = "flex";
-  responseBox.style.flexDirection = "column";
-  responseBox.innerHTML = "";
-
-  const stage = data.stage || "browse";
-
-  if (stage === "idle" || stage === "standby") {
-    _showSuggestionChips();
-  } else {
-    _hideSuggestionChips();
   }
 
-  // ── Latest Assistant Response Text (XSS-safe textContent) ───────
-  const latestResponse = document.createElement("div");
-  latestResponse.className = "ai-latest-response-text";
-  latestResponse.textContent = data.answer || "No response received.";
-  responseBox.appendChild(latestResponse);
-
-  // ── Structured Confirmation Summary Card ────────────────────────
-  if ((stage === "awaiting_confirm" || stage === "awaiting_cart_confirm") && (data.product_title || data.selected_product)) {
-    const card = document.createElement("div");
-    card.className = "ai-confirmation-card";
-
-    const content = document.createElement("div");
-    content.className = "ai-card-content";
-
-    const prod = data.selected_product;
-    if (prod && prod.images && prod.images.nodes && prod.images.nodes[0]) {
-      const img = document.createElement("img");
-      img.className = "ai-card-thumb";
-      img.src = prod.images.nodes[0].url;
-      img.alt = data.product_title || "Product";
-      content.appendChild(img);
+  function _openPanel(rootNode = document) {
+    const wrapper = rootNode?.classList?.contains("ai-fab-wrapper") ? rootNode : (_q(".ai-fab-wrapper", rootNode) || _q(".ai-fab-wrapper"));
+    if (!wrapper) return;
+    const panel = wrapper.querySelector(".ai-chat-panel");
+    const fabBtn = wrapper.querySelector(".ai-fab-btn");
+    const status = wrapper.querySelector(".ai-assistant-status");
+    if (status && status.innerHTML.includes("Microphone blocked")) {
+      status.textContent = "Tap the microphone to speak";
     }
 
-    const details = document.createElement("div");
-    details.className = "ai-card-details";
+    if (panel) {
+      panel.inert = false;
+      try { panel.removeAttribute("inert"); } catch (e) {}
+      panel.setAttribute("aria-hidden", "false");
+      panel.classList.add("ai-open", "ai-chat-panel--open");
+      panel.style.setProperty("display", "flex", "important");
+      requestAnimationFrame(() => {
+        panel.style.setProperty("opacity", "1", "important");
+        panel.style.setProperty("visibility", "visible", "important");
+        panel.style.setProperty("pointer-events", "auto", "important");
+        panel.style.setProperty("transform", "translateY(0) scale(1)", "important");
+      });
+    }
 
-    const title = document.createElement("div");
-    title.className = "ai-card-title";
-    title.textContent = data.product_title || (prod ? prod.title : "Product");
+    wrapper.classList.add("ai-panel-open");
+    if (fabBtn) fabBtn.setAttribute("aria-expanded", "true");
+    hideFloatingFab(wrapper);
+  }
 
-    const opts = document.createElement("div");
-    opts.className = "ai-card-options";
-    const optsList = [];
-    if (data.selected_options) {
-      for (const [k, v] of Object.entries(data.selected_options)) {
-        if (v) optsList.push(`${v}`);
+  function _closePanel(rootNode = document) {
+    const wrapper = rootNode?.classList?.contains("ai-fab-wrapper") ? rootNode : (_q(".ai-fab-wrapper", rootNode) || _q(".ai-fab-wrapper"));
+    if (!wrapper) return;
+    const panel = wrapper.querySelector(".ai-chat-panel");
+    const fabBtn = wrapper.querySelector(".ai-fab-btn");
+
+    // 1. Show and enable the FAB first
+    showFloatingFab(wrapper);
+
+    // 2. Move focus out of the panel before setting aria-hidden
+    const focusedElement = document.activeElement;
+    if (focusedElement && panel && panel.contains(focusedElement)) {
+      if (fabBtn && typeof fabBtn.focus === "function") {
+        try {
+          fabBtn.focus({ preventScroll: true });
+        } catch (e) {}
       }
     }
-    if (data.quantity) optsList.push(`Qty: ${data.quantity}`);
-    opts.textContent = optsList.join(" · ");
 
-    details.appendChild(title);
-    details.appendChild(opts);
-    content.appendChild(details);
-    card.appendChild(content);
-
-    const actions = document.createElement("div");
-    actions.className = "ai-card-actions";
-
-    const confirmBtn = document.createElement("button");
-    confirmBtn.type = "button";
-    confirmBtn.className = "ai-btn-confirm";
-    confirmBtn.textContent = "Confirm Add to Cart";
-    confirmBtn.addEventListener("click", () => {
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = "Adding...";
-      _processQuery("Yes");
-    });
-
-    const changeBtn = document.createElement("button");
-    changeBtn.type = "button";
-    changeBtn.className = "ai-btn-change";
-    changeBtn.textContent = "Change";
-    changeBtn.addEventListener("click", () => {
-      _processQuery("Change options");
-    });
-
-    actions.appendChild(confirmBtn);
-    actions.appendChild(changeBtn);
-    card.appendChild(actions);
-
-    responseBox.appendChild(card);
-  }
-
-  if (
-    data.navigation &&
-    data.navigation.requested === true &&
-    typeof data.navigation.url === "string" &&
-    /^\/collections\/[a-z0-9][a-z0-9-]*(\?.*)?$/i.test(data.navigation.url)
-  ) {
-    window.location.assign(data.navigation.url);
-    return;
-  }
-
-  if (data.stage === "awaiting_collection" && Array.isArray(data.collection_candidates) && data.collection_candidates.length > 0) {
-    const candidateWrap = document.createElement("div");
-    candidateWrap.className = "ai-suggestion-chips";
-    candidateWrap.style.marginTop = "8px";
-    data.collection_candidates.forEach(cand => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "ai-chip";
-      btn.textContent = cand.title || cand.handle;
-      btn.addEventListener("click", () => {
-        _processQuery({
-          intent: "select_collection_candidate",
-          collection_id: cand.id,
-          collection_handle: cand.handle,
-          collection_title: cand.title,
-          conversation_id: getSessionId()
-        });
-      });
-      candidateWrap.appendChild(btn);
-    });
-    responseBox.appendChild(candidateWrap);
-  }
-
-  if (data.auto_checkout && !data.added_variant_id) {
-    window.location.href = "/checkout";
-    return;
-  }
-
-  // =============================================================
-  // CART SUCCESS — show card + sync to native Shopify theme cart
-  // =============================================================
-  if (data.added_variant_id) {
-    (async () => {
-      try {
-        const rawId = String(data.added_variant_id);
-        const numericId = rawId.includes("/")
-          ? parseInt(rawId.split("/").pop(), 10)
-          : parseInt(rawId, 10);
-        if (!numericId || isNaN(numericId)) return;
-
-        const addQty = typeof data.added_quantity === "number" ? data.added_quantity : 1;
-
-        const formData = new FormData();
-        formData.append("id", numericId);
-        formData.append("quantity", addQty);
-        formData.append("sections", "cart-drawer,cart-icon-bubble");
-
-        let addResp = await fetch("/cart/add.js", {
-          method: "POST",
-          body: formData,
-          headers: { "X-Requested-With": "XMLHttpRequest" },
-        });
-
-        if (!addResp.ok) {
-          const formFallback = new FormData();
-          formFallback.append("id", numericId);
-          formFallback.append("quantity", addQty);
-          addResp = await fetch("/cart/add.js", {
-            method: "POST",
-            body: formFallback,
-            headers: { "X-Requested-With": "XMLHttpRequest" },
-          });
+    // 3. Set inert and aria-hidden
+    if (panel) {
+      panel.inert = true;
+      panel.setAttribute("aria-hidden", "true");
+      panel.classList.remove("ai-open", "ai-chat-panel--open");
+      panel.style.setProperty("opacity", "0", "important");
+      panel.style.setProperty("pointer-events", "none", "important");
+      panel.style.setProperty("transform", "translateY(24px) scale(0.92)", "important");
+      setTrackedTimeout(() => {
+        if (!panel.classList.contains("ai-open")) {
+          panel.style.setProperty("display", "none", "important");
+          panel.style.setProperty("visibility", "hidden", "important");
         }
+      }, 320);
+    }
 
-        if (!addResp.ok) {
-          console.warn("[AI Assistant] Theme cart sync note:", addResp.status);
-          return;
-        }
+    wrapper.classList.remove("ai-panel-open");
+    if (fabBtn) fabBtn.setAttribute("aria-expanded", "false");
+  }
 
-        const addData = await addResp.json();
+  async function renderApiResponse(data, responseBox, status, rootNode = document, turnId = activeTurnId) {
+    if (!data || turnId !== activeTurnId || panelManuallyClosed) return;
 
-        if (addData.sections) {
-          if (addData.sections["cart-drawer"]) {
-            const drawer = document.querySelector("cart-drawer");
-            if (drawer) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(addData.sections["cart-drawer"], "text/html");
-              const newDrawer = parsedHtml.querySelector("cart-drawer");
-              if (newDrawer) drawer.innerHTML = newDrawer.innerHTML;
+    if (data.sequence_num && data.sequence_num < _latestHandledSeqNum) {
+      console.warn(`[AI Assistant] Discarding stale response seq ${data.sequence_num}`);
+      return;
+    }
 
-              if (data.auto_checkout) {
-                // Instantly navigate to checkout without showing cart drawer or waiting
-                window.location.href = "/checkout";
-                return;
+    if (data.sequence_num) {
+      _latestHandledSeqNum = data.sequence_num;
+    }
+
+    // ── Client Cart Action Execution Handler (v2.1.9) ──────────────────
+    if (data.requires_client_action && data.cart_action) {
+      const action = data.cart_action;
+      if (completedCartActionIds.has(action.action_id) || cartActionInFlight) {
+        console.warn(`[AI Assistant] Action ${action.action_id} in flight or already completed.`);
+        return;
+      }
+
+      cartActionInFlight = true;
+      transitionAssistantState(AssistantState.PROCESSING, rootNode);
+      if (status) status.textContent = "Updating your cart...";
+
+      (async () => {
+        let isSuccess = false;
+        let resultData = null;
+        let errorData = null;
+
+        try {
+          const actType = action.action_type || action.type;
+          if (actType === "add") {
+            let prod = null;
+            if (action.product_handle) {
+              prod = await fetchStorefrontProduct(action.product_handle);
+            }
+            let resolvedVar = null;
+            if (prod) {
+              const res = resolveVariantStrict(prod, action.selected_options);
+              if (res.error) {
+                errorData = { code: res.error, message: "Variant resolution failed" };
               } else {
-                drawer.classList.remove("is-empty");
-                drawer.classList.add("active");
-                if (typeof drawer.open === "function") drawer.open();
+                resolvedVar = res.variant;
+              }
+            } else if (action.variant_id) {
+              const rawV = String(action.variant_id).split("/").pop();
+              resolvedVar = { id: parseInt(rawV, 10), available: true };
+            }
+
+            if (!resolvedVar && !errorData) {
+              errorData = { code: "VARIANT_RESOLUTION_INCOMPLETE", message: "Could not resolve variant" };
+            }
+
+            if (resolvedVar && !errorData) {
+              const beforeCart = await nativeCartAdapter.getCart();
+              const beforeQty = getExactLineQuantity(beforeCart, { variantId: resolvedVar.id });
+              const expectedQty = action.quantity_mode === "increment" ? (beforeQty + action.quantity) : action.quantity;
+
+              const addResult = await nativeCartAdapter.addItems([{
+                id: resolvedVar.id,
+                quantity: action.quantity
+              }]);
+
+              const afterCart = await nativeCartAdapter.getCart();
+              const actualQty = getExactLineQuantity(afterCart, { variantId: resolvedVar.id });
+
+              if (actualQty === expectedQty || (afterCart.item_count > beforeCart.item_count)) {
+                isSuccess = true;
+                resultData = { total_quantity: afterCart.item_count, items: afterCart.items };
+              } else {
+                // Controlled 1 retry
+                await delay(300);
+                const retryCart = await nativeCartAdapter.getCart();
+                const retryQty = getExactLineQuantity(retryCart, { variantId: resolvedVar.id });
+                if (retryQty === expectedQty) {
+                  isSuccess = true;
+                  resultData = { total_quantity: retryCart.item_count, items: retryCart.items };
+                } else {
+                  errorData = { code: "CART_QUANTITY_UNAVAILABLE", message: "Quantity verification failed" };
+                }
+              }
+            }
+          } else if (actType === "change" || actType === "remove") {
+            const beforeCart = await nativeCartAdapter.getCart();
+            const exactLine = findExactCartLine(beforeCart, {
+              lineKey: action.line_key,
+              variantId: action.variant_id,
+              selectedOptions: action.selected_options
+            });
+
+            if (!exactLine) {
+              errorData = { code: "CART_LINE_NOT_FOUND", message: "Line item not found in cart" };
+            } else {
+              const beforeQty = exactLine.quantity || 1;
+              const expectedQty = actType === "remove" ? 0 : (action.quantity_mode === "increment" ? (beforeQty + action.quantity) : action.quantity);
+
+              await nativeCartAdapter.changeLine(exactLine.key, expectedQty);
+
+              const afterCart = await nativeCartAdapter.getCart();
+              const actualQty = getExactLineQuantity(afterCart, { lineKey: exactLine.key, variantId: exactLine.variant_id });
+
+              if (actualQty === expectedQty) {
+                isSuccess = true;
+                resultData = { total_quantity: afterCart.item_count, items: afterCart.items };
+              } else {
+                errorData = { code: "CART_QUANTITY_UNAVAILABLE", message: "Quantity update verification failed" };
+              }
+            }
+          } else if (actType === "clear") {
+            await nativeCartAdapter.clearCart();
+            const afterCart = await nativeCartAdapter.getCart();
+            if (afterCart.item_count === 0) {
+              isSuccess = true;
+              resultData = { total_quantity: 0, items: [] };
+            } else {
+              errorData = { code: "CART_CLEAR_FAILED", message: "Failed to clear cart" };
+            }
+          }
+        } catch (err) {
+          console.error("[AI Assistant] Client cart action execution error:", err);
+          const msg = String(err.message || "");
+          if (msg.includes("HTTP_429")) {
+            errorData = { code: "HTTP_429", message: "Cart service busy" };
+          } else {
+            errorData = { code: "CART_OPERATION_FAILED", message: msg };
+          }
+        } finally {
+          completedCartActionIds.add(action.action_id);
+          _saveCompletedCartActionId(action.action_id);
+          cartActionInFlight = false;
+        }
+
+        // Broadcast cart updated custom events & refresh theme UI
+        try {
+          const freshCart = await nativeCartAdapter.getCart();
+          await notifyCartUpdate(freshCart, action.product_title ? `Updated ${action.product_title} in your cart.` : "");
+        } catch (e) {}
+
+        // Send acknowledgement system event to backend
+        try {
+          const ackResp = await fetch(`${getApiBaseUrl()}/voice-text`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              intent: "client_cart_action_result",
+              session_id: getSessionId(),
+              action_id: action.action_id,
+              success: isSuccess,
+              result: resultData,
+              error: errorData,
+              shop_domain: window.Shopify?.shop || ""
+            })
+          });
+
+          if (ackResp.ok) {
+            const finalData = await ackResp.json();
+            if (finalData.success === false) {
+              console.error("[AI Assistant] Acknowledgement backend error:", finalData.error);
+            } else if (turnId === activeTurnId && !panelManuallyClosed) {
+              try {
+                const freshCart = await nativeCartAdapter.getCart();
+                await notifyCartUpdate(freshCart, finalData.answer);
+              } catch (e) {
+                await notifyCartUpdate(null, finalData.answer);
+              }
+              // ── v2.1.12: Mark this as an ACK response so renderApiResponse
+              // skips the legacy added/removed/updated_variant_id cart paths.
+              // Those paths would cause a double-add since the cart action was
+              // already executed above by nativeCartAdapter.
+              finalData._from_ack = true;
+              await renderApiResponse(finalData, responseBox, status, rootNode, turnId);
+              
+              if (finalData.auto_checkout || data.auto_checkout) {
+                window.location.href = "/checkout";
               }
             }
           }
-
-          if (addData.sections["cart-icon-bubble"]) {
-            const bubble = document.querySelector("#cart-icon-bubble");
-            if (bubble) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(addData.sections["cart-icon-bubble"], "text/html");
-              const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
-              bubble.innerHTML = newBubble ? newBubble.innerHTML : addData.sections["cart-icon-bubble"];
-            }
-          }
+        } catch (ackErr) {
+          console.error("[AI Assistant] Acknowledgement error:", ackErr);
         }
+      })();
 
-        const cartResp = await fetch("/cart.js");
-        if (cartResp.ok) {
-          const nativeCart = await cartResp.json();
-          const count = nativeCart.item_count || 0;
-          document.querySelectorAll(
-            ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
-          ).forEach(el => {
-            el.textContent = count;
-            if (count > 0) el.removeAttribute("hidden");
-          });
-
-          document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
-          document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
-        }
-      } catch (err) {}
-    })();
-  }
-
-  // =============================================================
-  // CART QUANTITY UPDATE — sync quantity update to native Shopify theme cart
-  // =============================================================
-  if (data.updated_variant_id && !data.added_variant_id && !data.removed_variant_id) {
-    (async () => {
-      try {
-        const rawId = String(data.updated_variant_id);
-        const numericId = rawId.includes("/")
-          ? parseInt(rawId.split("/").pop(), 10)
-          : parseInt(rawId, 10);
-
-        if (!numericId || isNaN(numericId)) return;
-
-        const targetQty = typeof data.updated_quantity === "number" ? data.updated_quantity : 1;
-
-        const updateResp = await fetch("/cart/change.js", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-          body: JSON.stringify({
-            id: String(numericId),
-            quantity: targetQty,
-            sections: "cart-drawer,cart-icon-bubble"
-          }),
-        });
-
-        if (!updateResp.ok) return;
-
-        const updateData = await updateResp.json();
-
-        if (updateData.sections) {
-          if (updateData.sections["cart-drawer"]) {
-            const drawer = document.querySelector("cart-drawer");
-            if (drawer) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(updateData.sections["cart-drawer"], "text/html");
-              const newDrawer = parsedHtml.querySelector("cart-drawer");
-              if (newDrawer) drawer.innerHTML = newDrawer.innerHTML;
-              if (updateData.item_count === 0) drawer.classList.add("is-empty");
-              else drawer.classList.remove("is-empty");
-              drawer.classList.add("active");
-              if (typeof drawer.open === "function") drawer.open();
-            }
-          }
-
-          if (updateData.sections["cart-icon-bubble"]) {
-            const bubble = document.querySelector("#cart-icon-bubble");
-            if (bubble) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(updateData.sections["cart-icon-bubble"], "text/html");
-              const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
-              bubble.innerHTML = newBubble ? newBubble.innerHTML : updateData.sections["cart-icon-bubble"];
-            }
-          }
-        }
-
-        const cartResp = await fetch("/cart.js");
-        if (cartResp.ok) {
-          const nativeCart = await cartResp.json();
-          const count = nativeCart.item_count || 0;
-          document.querySelectorAll(
-            ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
-          ).forEach(el => {
-            el.textContent = count;
-            if (count > 0) el.removeAttribute("hidden");
-          });
-
-          document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
-          document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
-        }
-      } catch (err) {}
-    })();
-  }
-
-  // =============================================================
-  // CART REMOVAL — sync removal to native Shopify theme cart
-  // =============================================================
-  if (data.removed_variant_id) {
-    (async () => {
-      try {
-        const rawId = String(data.removed_variant_id);
-        const numericId = rawId.includes("/")
-          ? parseInt(rawId.split("/").pop(), 10)
-          : parseInt(rawId, 10);
-
-        if (!numericId || isNaN(numericId)) return;
-
-        const targetQty = typeof data.updated_quantity === "number" ? data.updated_quantity : 0;
-
-        const removeResp = await fetch("/cart/change.js", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-          body: JSON.stringify({
-            id: String(numericId),
-            quantity: targetQty,
-            sections: "cart-drawer,cart-icon-bubble"
-          }),
-        });
-
-        if (!removeResp.ok) return;
-
-        const removeData = await removeResp.json();
-
-        if (removeData.sections) {
-          if (removeData.sections["cart-drawer"]) {
-            const drawer = document.querySelector("cart-drawer");
-            if (drawer) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(removeData.sections["cart-drawer"], "text/html");
-              const newDrawer = parsedHtml.querySelector("cart-drawer");
-              if (newDrawer) drawer.innerHTML = newDrawer.innerHTML;
-              if (removeData.item_count === 0) drawer.classList.add("is-empty");
-              drawer.classList.add("active");
-              if (typeof drawer.open === "function") drawer.open();
-            }
-          }
-
-          if (removeData.sections["cart-icon-bubble"]) {
-            const bubble = document.querySelector("#cart-icon-bubble");
-            if (bubble) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(removeData.sections["cart-icon-bubble"], "text/html");
-              const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
-              bubble.innerHTML = newBubble ? newBubble.innerHTML : removeData.sections["cart-icon-bubble"];
-            }
-          }
-        }
-
-        const cartResp = await fetch("/cart.js");
-        if (cartResp.ok) {
-          const nativeCart = await cartResp.json();
-          const count = nativeCart.item_count || 0;
-          document.querySelectorAll(
-            ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
-          ).forEach(el => {
-            el.textContent = count;
-            if (count === 0) el.setAttribute("hidden", "true");
-          });
-
-          document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
-          document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
-        }
-      } catch (err) {}
-    })();
-  }
-
-  // =============================================================
-  // CART CLEAR — empty all items in native Shopify theme cart
-  // =============================================================
-  if (data.clear_cart) {
-    (async () => {
-      try {
-        const clearResp = await fetch("/cart/clear.js", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-          body: JSON.stringify({ sections: "cart-drawer,cart-icon-bubble" }),
-        });
-
-        const clearData = clearResp.ok ? await clearResp.json() : {};
-
-        if (clearData.sections) {
-          if (clearData.sections["cart-drawer"]) {
-            const drawer = document.querySelector("cart-drawer");
-            if (drawer) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(clearData.sections["cart-drawer"], "text/html");
-              const newDrawer = parsedHtml.querySelector("cart-drawer");
-              if (newDrawer) drawer.innerHTML = newDrawer.innerHTML;
-              drawer.classList.add("is-empty");
-              drawer.classList.add("active");
-              if (typeof drawer.open === "function") drawer.open();
-            }
-          }
-
-          if (clearData.sections["cart-icon-bubble"]) {
-            const bubble = document.querySelector("#cart-icon-bubble");
-            if (bubble) {
-              const parser = new DOMParser();
-              const parsedHtml = parser.parseFromString(clearData.sections["cart-icon-bubble"], "text/html");
-              const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
-              bubble.innerHTML = newBubble ? newBubble.innerHTML : clearData.sections["cart-icon-bubble"];
-            }
-          }
-        }
-
-        document.querySelectorAll(
-          ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
-        ).forEach(el => {
-          el.textContent = "0";
-          el.setAttribute("hidden", "true");
-        });
-
-        document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
-        document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
-      } catch (err) {}
-    })();
-  }
-
-
-  // =============================================================
-  // DYNAMIC PAGE TRANSITION (SPA mode) — prevents full page reloads
-  // =============================================================
-  let isDifferentUrl = false;
-  if (data.storefront_url) {
-    try {
-      const targetUrl = new URL(data.storefront_url, window.location.origin);
-      const currentUrl = new URL(window.location.href);
-      isDifferentUrl = (targetUrl.pathname + targetUrl.search) !== (currentUrl.pathname + currentUrl.search);
-    } catch (e) {
-      isDifferentUrl = true;
+      return;
     }
-  }
 
-  // If navigating to a new page (e.g. Home -> Collection), swap content dynamically via SPA navigation
-  if (data.storefront_url && isDifferentUrl && !data.cart && !data.auto_checkout) {
-    try {
-      history.pushState(null, "", data.storefront_url);
-      fetch(data.storefront_url)
-        .then(res => res.text())
-        .then(html => {
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(html, "text/html");
-          const mainContent = doc.querySelector("main") || doc.querySelector("#MainContent") || doc.querySelector(".main-content") || doc.querySelector("#product-grid");
-          const currentMain = document.querySelector("main") || document.querySelector("#MainContent") || document.querySelector(".main-content") || document.querySelector("#product-grid");
-          if (mainContent && currentMain) {
-            currentMain.innerHTML = mainContent.innerHTML;
+    responseBox.innerHTML = "";
+
+    if (data.answer) {
+      const textEl = document.createElement("p");
+      textEl.style.margin = "0";
+      textEl.style.lineHeight = "1.5";
+      textEl.innerHTML = data.answer.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+      responseBox.appendChild(textEl);
+    }
+
+    if (Array.isArray(data.variant_options) && data.variant_options.length > 0) {
+      const optWrap = document.createElement("div");
+      optWrap.className = "ai-assistant-options-container";
+      optWrap.style.marginTop = "10px";
+
+      data.variant_options.forEach(optGroup => {
+        const groupTitle = document.createElement("div");
+        groupTitle.className = "ai-assistant-option-label";
+        groupTitle.textContent = `${optGroup.name}:`;
+        optWrap.appendChild(groupTitle);
+
+        const btnGroup = document.createElement("div");
+        btnGroup.className = "ai-assistant-option-buttons";
+
+        (optGroup.values || []).forEach(valObj => {
+          const valStr = typeof valObj === "object" ? valObj.value : String(valObj);
+          const isAvail = typeof valObj === "object" ? valObj.available !== false : true;
+          const isSel = typeof valObj === "object" ? valObj.selected === true : false;
+
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "ai-assistant-option-btn";
+          if (isSel) btn.classList.add("ai-assistant-option-btn--selected");
+          btn.setAttribute("aria-pressed", isSel ? "true" : "false");
+
+          if (!isAvail) {
+            btn.disabled = true;
+            btn.classList.add("ai-assistant-option-btn--disabled");
           }
-        }).catch(e => {});
-    } catch (e) {}
-  }
 
+          btn.textContent = valStr;
 
-
-
-  if (data.audio) {
-    try {
-      const audioBytes = atob(data.audio);
-      const arr = new Uint8Array(audioBytes.length);
-      for (let i = 0; i < audioBytes.length; i++) arr[i] = audioBytes.charCodeAt(i);
-      const blob = new Blob([arr], { type: "audio/mpeg" });
-      const blobUrl = URL.createObjectURL(blob);
-      const audio   = new Audio(blobUrl);
-      audio.volume  = 1.0;
-      _currentPlayingAudio = audio;
-
-      audio.onplay  = () => { status.textContent = "Playing response…"; };
-      audio.onended = () => {
-        URL.revokeObjectURL(blobUrl);
-        _currentPlayingAudio = null;
-        status.textContent = "Tap the microphone to speak";
-      };
-      audio.onerror = () => {
-        URL.revokeObjectURL(blobUrl);
-        _currentPlayingAudio = null;
-        speakTextWithBrowserSpeech(data.answer, status);
-      };
-
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.then(() => {
-          status.textContent = "Playing response…";
-        }).catch(e => {
-          console.warn("[AI Assistant] Autoplay policy prevented immediate playback, falling back to speech synthesis:", e.message);
-          speakTextWithBrowserSpeech(data.answer, status);
-
-          const unlockAndPlay = () => {
-            stopAllAudioPlayback();
-            audio.play().catch(err => speakTextWithBrowserSpeech(data.answer, status));
-
-            ["pointerdown", "touchstart", "click", "keydown", "mousemove"].forEach(evtName => {
-              document.removeEventListener(evtName, unlockAndPlay);
-            });
-          };
-
-          ["pointerdown", "touchstart", "click", "keydown", "mousemove"].forEach(evtName => {
-            document.addEventListener(evtName, unlockAndPlay, { once: true });
+          btn.addEventListener("click", () => {
+            if (!isAvail) return;
+            _processQuery({
+              intent: "select_variant_option",
+              product_id: data.product_id || data.product?.id,
+              option_name: optGroup.name,
+              option_value: valStr,
+              selection_revision: data.selection_revision,
+              conversation_id: getSessionId()
+            }, rootNode);
           });
+
+          btnGroup.appendChild(btn);
         });
+
+        optWrap.appendChild(btnGroup);
+      });
+
+      responseBox.appendChild(optWrap);
+    }
+
+    if (data.stage === "awaiting_collection" && Array.isArray(data.collection_candidates) && data.collection_candidates.length > 0) {
+      const candidateWrap = document.createElement("div");
+      candidateWrap.className = "ai-suggestion-chips";
+      candidateWrap.style.marginTop = "8px";
+      data.collection_candidates.forEach(cand => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ai-chip";
+        btn.textContent = cand.title || cand.handle;
+        btn.addEventListener("click", () => {
+          _processQuery({
+            intent: "select_collection_candidate",
+            collection_id: cand.id,
+            collection_handle: cand.handle,
+            collection_title: cand.title,
+            conversation_id: getSessionId()
+          }, rootNode);
+        });
+        candidateWrap.appendChild(btn);
+      });
+      responseBox.appendChild(candidateWrap);
+    }
+
+    if (data.auto_checkout && !data.added_variant_id) {
+      window.location.href = "/checkout";
+      return;
+    }
+
+    if (data.clear_cart && !data.requires_client_action) {
+      (async () => {
+        try {
+          await fetch("/cart/clear.js", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          const freshCart = await nativeCartAdapter.getCart();
+          await notifyCartUpdate(freshCart, data.answer);
+        } catch (e) {
+          console.error("[AI Assistant] Native cart clear error:", e);
+        }
+      })();
+    }
+
+    // ── v2.1.12: Skip legacy variant cart paths when this is an ACK response.
+    // The cart action was already executed by the client-cart-action block above.
+    if (data.removed_variant_id && !data._from_ack && !data.requires_client_action) {
+      (async () => {
+        try {
+          const rawId = String(data.removed_variant_id);
+          const numericId = rawId.includes("/")
+            ? parseInt(rawId.split("/").pop(), 10)
+            : parseInt(rawId, 10);
+          if (!numericId || isNaN(numericId)) return;
+
+          await fetch("/cart/change.js", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: String(numericId), quantity: 0 }),
+          });
+          const freshCart = await nativeCartAdapter.getCart();
+          await notifyCartUpdate(freshCart, data.answer);
+        } catch (e) {
+          console.error("[AI Assistant] Native cart remove error:", e);
+        }
+      })();
+    }
+
+    if (data.updated_variant_id && typeof data.updated_quantity === "number" && !data._from_ack && !data.requires_client_action) {
+      (async () => {
+        try {
+          const rawId = String(data.updated_variant_id);
+          const numericId = rawId.includes("/")
+            ? parseInt(rawId.split("/").pop(), 10)
+            : parseInt(rawId, 10);
+          if (!numericId || isNaN(numericId)) return;
+
+          await fetch("/cart/change.js", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: String(numericId), quantity: data.updated_quantity }),
+          });
+          const freshCart = await nativeCartAdapter.getCart();
+          await notifyCartUpdate(freshCart, data.answer);
+          
+          if (data.auto_checkout) {
+            window.location.href = "/checkout";
+          }
+        } catch (e) {
+          console.error("[AI Assistant] Native cart quantity update error:", e);
+        }
+      })();
+    }
+
+    if (data.added_variant_id && !data._from_ack && !data.requires_client_action) {
+      (async () => {
+        try {
+          const rawId = String(data.added_variant_id);
+          const numericId = rawId.includes("/")
+            ? parseInt(rawId.split("/").pop(), 10)
+            : parseInt(rawId, 10);
+          if (!numericId || isNaN(numericId)) return;
+
+          const addQty = typeof data.added_quantity === "number" ? data.added_quantity : 1;
+
+          await fetch("/cart/add.js", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items: [{ id: numericId, quantity: addQty }] }),
+          });
+          const freshCart = await nativeCartAdapter.getCart();
+          await notifyCartUpdate(freshCart, data.answer);
+          
+          if (data.auto_checkout) {
+            window.location.href = "/checkout";
+          }
+        } catch (e) {
+          console.error("[AI Assistant] Native cart add error:", e);
+        }
+      })();
+    }
+
+
+    // ── Storefront Navigation — if storefront_url is provided, navigate/filter FIRST
+    // so the customer sees the filtered page and hears the response ONCE on the results page.
+    const navUrl = data.storefront_url || data.navigation?.url;
+    if (navUrl && typeof navUrl === "string") {
+      const currentPath = window.location.pathname + window.location.search;
+      if (navUrl !== currentPath && !navUrl.endsWith(currentPath)) {
+        try {
+          sessionStorage.setItem("ai_nav_restore", JSON.stringify({
+            answer: data.answer || data.message || "",
+            requires_input: data.requires_input,
+            auto_listen: data.auto_listen,
+            stage: data.stage,
+            ts: Date.now(),
+            speak: true
+          }));
+          if (status) status.textContent = "Filtering products…";
+          window.location.href = navUrl;
+          return;
+        } catch (e) {
+          console.error("[AI Assistant] Storefront navigation error:", e);
+        }
       }
-    } catch (e) {
-      speakTextWithBrowserSpeech(data.answer, status);
     }
-  } else {
-    speakTextWithBrowserSpeech(data.answer, status);
+
+    // ── No navigation required — speak response ONCE on current page
+    await speakResponseAndWait(data, turnId, status, rootNode);
+
+    if (turnId !== activeTurnId || panelManuallyClosed) return;
+
+    await handlePostResponseBehavior(data, turnId, rootNode);
   }
 
+  // ── v2.1.6 Response Lifecycle Decision Controllers ─────────────────────
+  function markTurnFinalized(turnId) {
+    if (typeof turnId === "number") {
+      finalizedTurnId = turnId;
+    }
+  }
 
-} // end renderApiResponse
+  function invalidateCompletedTurn(turnId) {
+    if (typeof turnId === "number" && turnId === activeTurnId) {
+      activeTurnId += 1;
+    }
+  }
 
+  function clearAutoListenTimer() {
+    if (autoListenTimer) {
+      clearTimeout(autoListenTimer);
+      autoListenTimer = null;
+    }
+  }
 
+  function scheduleAutoListen(turnId, callback, delayMs = 200) {
+    clearAutoListenTimer();
+    autoListenTimer = setTrackedTimeout(() => {
+      autoListenTimer = null;
+      if (typeof callback === "function") {
+        callback();
+      }
+    }, delayMs);
+  }
 
-// ===============================================================
-// MIC / VOICE FLOW  — robust init for Shopify theme sections
-// ===============================================================
+  async function speakResponseAndWait(data, turnId, status, rootNode = document) {
+    const text = data?.message || data?.answer || "";
+    if (!text && !data?.audio) return;
 
-function initAiAssistantButton(button) {
+    transitionAssistantState(AssistantState.SPEAKING, rootNode);
+    isSpeaking = true;
 
-  if (button._aiInitialised) return;
-  button._aiInitialised = true;
+    stopWakeRecognition({
+      reason: "assistant-speaking",
+      allowRestart: false
+    });
 
-  let mediaRecorder = null;
-  let audioChunks   = [];
-  let stream        = null;
-  let recognition   = null;
-  let speechTranscript = "";
+    stopQueryRecognition();
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    return new Promise((resolve) => {
+      const wordsCount = text.split(/\s+/).length;
+      const ttsTimeoutMs = Math.min(45000, Math.max(20000, Math.ceil((wordsCount / 1.5) * 1000) + 6000));
 
-  // Intercept touchstart & mousedown for instant 0ms audio interruption on physical press
-  ["touchstart", "mousedown", "pointerdown"].forEach(evtName => {
-    button.addEventListener(evtName, stopAllAudioPlayback, { passive: true });
-  });
+      let ttsTimeoutTimer = setTrackedTimeout(() => {
+        console.warn(`[AI Assistant] TTS speech timeout (${ttsTimeoutMs / 1000}s limit reached). Cancelling audio.`);
+        cancelAssistantTts("tts-timeout");
+        if (settleActiveTts) {
+          settleActiveTts({ status: "timeout" });
+          settleActiveTts = null;
+        }
+      }, ttsTimeoutMs);
 
-  button.addEventListener("click", async () => {
-    // ── Instantly interrupt any playing response audio when mic is clicked ──
+      settleActiveTts = (res) => {
+        if (ttsTimeoutTimer) {
+          clearTimeout(ttsTimeoutTimer);
+          activeTimers.delete(ttsTimeoutTimer);
+          ttsTimeoutTimer = null;
+        }
+        // ── FIX (v2.1.11): Clear isSpeaking BEFORE resolving outer promise
+        // so that handlePostResponseBehavior's wake-restart guard sees isSpeaking=false.
+        if (turnId === activeTurnId) {
+          isSpeaking = false;
+        }
+        if (ttsAbortController) {
+          ttsAbortController = null;
+        }
+        resolve(res);
+      };
+
+      ttsAbortController = new AbortController();
+
+      speakAssistantResponse(data, turnId, status, rootNode)
+        .then(() => {
+          if (settleActiveTts) {
+            settleActiveTts({ status: "completed" });
+            settleActiveTts = null;
+          }
+        })
+        .catch((err) => {
+          if (settleActiveTts) {
+            settleActiveTts({ status: "error", error: err });
+            settleActiveTts = null;
+          }
+        })
+        .finally(() => {
+          if (ttsTimeoutTimer) {
+            clearTimeout(ttsTimeoutTimer);
+            activeTimers.delete(ttsTimeoutTimer);
+            ttsTimeoutTimer = null;
+          }
+          // Safety fallback: ensure isSpeaking is cleared even on unexpected paths
+          if (turnId === activeTurnId) {
+            isSpeaking = false;
+          }
+          if (ttsAbortController) {
+            ttsAbortController = null;
+          }
+        });
+    });
+  }
+
+  // ── Intelligent Question & Stage Detection ──────────────────────────────
+  const USER_INPUT_STAGES = new Set([
+    "awaiting_product_clarification",
+    "awaiting_collection",
+    "awaiting_variant",
+    "awaiting_variant_option",
+    "awaiting_size",
+    "awaiting_color",
+    "awaiting_quantity",
+    "awaiting_confirm",
+    "awaiting_cart_confirm",
+    "awaiting_cart_quantity",
+    "awaiting_client_cart_action",
+    "awaiting_cart_checkout",
+    "awaiting_shipping_address"
+  ]);
+
+  function responseRequiresInput(data) {
+    if (!data) return false;
+    if (data.close_widget === true || data.auto_close === true || data.immediate_close === true) return false;
+    if (data.requires_input === true) return true;
+    if (data.auto_listen === true) return true;
+    if (data.stage && USER_INPUT_STAGES.has(data.stage)) return true;
+
+    const text = (data.message || data.answer || "").trim();
+    if (text) {
+      if (/\?\s*$/.test(text)) return true;
+      if (/\b(which|would you|what size|what color|shall I|do you want|please select|please choose|prefer)\b/i.test(text)) return true;
+    }
+
+    return false;
+  }
+
+  async function handlePostResponseBehavior(data, turnId, rootNode = document) {
+    if (turnId !== activeTurnId) return;
+
+    // Clear processing flag before evaluating wake restart
+    isProcessing = false;
+
+    if (handsFreeEnabled && !microphoneHardError) {
+      microphoneAccessConfirmed = true;
+    }
+
+    const shouldCloseWidget = data.close_widget === true || data.auto_close === true || data.immediate_close === true;
+    const requiresInput = !shouldCloseWidget && responseRequiresInput(data);
+    const conversationComplete = (data.conversation_complete === true || shouldCloseWidget) && !requiresInput;
+    const autoClose = shouldCloseWidget || (conversationComplete && data.auto_close === true);
+
+    if (shouldCloseWidget || (conversationComplete && autoClose)) {
+      await completeAndCloseConversation(turnId, data.intent, rootNode);
+      return;
+    }
+
+    if (requiresInput) {
+      await prepareForFollowUpListening(turnId, rootNode);
+      return;
+    }
+
+    if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+      // ── Buffer delay (350ms) ensures browser microphone hardware releases after TTS speech
+      // before re-arming SpeechRecognition.
+      await delay(350);
+      if (turnId !== activeTurnId) return;
+
+      // Re-enable wake restart (was locked by stopWakeRecognition during speech)
+      wakeRestartAllowed = true;
+
+      const wakeStarted = await startWakeRecognitionSafely(rootNode);
+      if (!wakeStarted && shouldRestartWakeRecognition()) {
+        logWakeEvent("wake restart after response: startWakeRecognitionSafely returned false, scheduling retry");
+        scheduleWakeRecognitionRestart(wakeSessionId, rootNode);
+      }
+    } else {
+      transitionAssistantState(AssistantState.IDLE, rootNode);
+    }
+  }
+
+  async function prepareForFollowUpListening(turnId, rootNode = document) {
+    if (turnId !== activeTurnId) return;
+    if (panelManuallyClosed) return;
+
+    openAssistantPanel("follow-up");
+
+    stopWakeRecognition({
+      reason: "follow-up",
+      allowRestart: false
+    });
+
+    cancelAssistantTts("follow-up-transition");
+
+    await delay(200);
+
+    if (turnId !== activeTurnId) return;
+    if (panelManuallyClosed) return;
+
+    const started = await startQueryRecognitionSafely({
+      turnId,
+      source: "assistant-follow-up"
+    }, rootNode);
+
+    transitionAssistantState(
+      started || !microphoneHardError ? AssistantState.LISTENING : AssistantState.ERROR,
+      rootNode
+    );
+  }
+
+  async function completeAndCloseConversation(turnId, intent, rootNode = document) {
+    if (turnId !== activeTurnId) return;
+
+    stopQueryRecognition();
+    cancelAssistantTts("auto-complete");
+    clearAutoListenTimer();
+
+    markTurnFinalized(turnId);
+
+    closeAssistantPanel({
+      source: intent === "cancel" ? "voice-close" : "auto-complete",
+      cancelCurrentTurn: false
+    });
+
+    invalidateCompletedTurn(turnId);
+  }
+
+  // ── Query Execution Handler ────────────────────────────────────────
+  async function _processQuery(query, rootNode = document) {
+    const turnId = beginAssistantTurn();
     stopAllAudioPlayback();
 
-    // Support both old inline layout and new floating panel layout
-    const container   = button.closest(".ai-shopping-assistant") || button.closest(".ai-fab-wrapper");
-    const status      = container ? container.querySelector(".ai-assistant-status") : document.querySelector(".ai-assistant-status");
-    const responseBox = container ? container.querySelector(".ai-assistant-response") : document.querySelector(".ai-assistant-response");
+    const responseBox = _q(".ai-assistant-response", rootNode);
+    const status = _q(".ai-assistant-status", rootNode);
 
-    // =============================================================
-    // STOP RECORDING (second tap)
-    // =============================================================
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      if (recognition) {
-        try { recognition.stop(); } catch (e) {}
-      }
-      mediaRecorder.stop();
-      if (status) status.textContent = "Processing…";
-      // Switch to processing state on both mic button and FAB
-      button.style.background = "";
-      button.classList.remove("ai-fab--listening");
-      button.classList.add("ai-fab--processing");
-      const fabBtn2 = container ? container.querySelector(".ai-fab-btn") : null;
-      if (fabBtn2 && fabBtn2 !== button) {
-        fabBtn2.classList.remove("ai-fab--listening");
-        fabBtn2.classList.add("ai-fab--processing");
-      }
-      return;
-    }
+    const isObj = typeof query === "object" && query !== null;
+    const msgStr = isObj ? (query.text || query.collection_title || query.collection_handle || "Select collection") : String(query);
 
-    // =============================================================
-    // START RECORDING (first tap)
-    // =============================================================
+    _hideSuggestionChips(rootNode);
+    _setCustomerTranscription(`You said: “${msgStr}”`, rootNode);
+    isProcessing = true;
+    transitionAssistantState(AssistantState.PROCESSING, rootNode);
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      status.textContent = "⚠️ Microphone not supported on this browser/connection.";
-      console.error("[AI Assistant] navigator.mediaDevices unavailable — page must be served over HTTPS.");
-      return;
-    }
+    const currentSeq = ++_reqSeqNum;
 
     try {
-      status.textContent = "Requesting microphone…";
-
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      mediaRecorder = new MediaRecorder(stream);
-      audioChunks   = [];
-      speechTranscript = "";
-
-      // Initialize Web Speech Recognition for instant 0ms STT
-      if (SpeechRecognition) {
-        try {
-          recognition = new SpeechRecognition();
-          recognition.continuous = false; // Auto-stop when user finishes speaking
-          recognition.interimResults = true;
-          recognition.lang = "en-US";
-
-          recognition.onresult = (event) => {
-            let current = "";
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-              current += event.results[i][0].transcript;
-            }
-            if (current.trim()) {
-              speechTranscript = current.trim();
-              status.textContent = `🎙️ "${speechTranscript}"`;
-            }
-          };
-          recognition.start();
-        } catch (e) {
-          console.warn("[AI Assistant] Web Speech Recognition init fallback:", e);
-        }
-      }
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunks.push(e.data);
+      const apiBase = getApiBaseUrl();
+      const nativeCart = await getNativeShopifyCart();
+      const sanitizedCart = sanitizeCartContext(nativeCart);
+      const requestBody = isObj ? {
+        message: msgStr,
+        session_id: getSessionId(),
+        cart_context: sanitizedCart,
+        sequence_num: currentSeq,
+        intent: query.intent,
+        product_id: query.product_id,
+        option_name: query.option_name,
+        option_value: query.option_value,
+        selection_revision: query.selection_revision,
+        collection_id: query.collection_id,
+        collection_handle: query.collection_handle,
+      } : {
+        message: msgStr,
+        session_id: getSessionId(),
+        cart_context: sanitizedCart,
+        sequence_num: currentSeq,
       };
 
-      // ===========================================================
-      // AFTER RECORDING STOPS → send to API
-      // ===========================================================
-      mediaRecorder.onstop = async () => {
-        status.textContent = "Processing response…";
-        // Ensure processing state is shown
-        button.classList.remove("ai-fab--listening");
-        button.classList.add("ai-fab--processing");
-        const fabBtnStop = container ? container.querySelector(".ai-fab-btn") : null;
-        if (fabBtnStop && fabBtnStop !== button) {
-          fabBtnStop.classList.remove("ai-fab--listening");
-          fabBtnStop.classList.add("ai-fab--processing");
-        }
+      const resp = await fetch(`${apiBase}/voice-text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: requestAbortController?.signal
+      });
 
-        const resetFabState = () => {
-          button.classList.remove("ai-fab--listening", "ai-fab--processing");
-          button.style.background = "";
-          if (fabBtnStop && fabBtnStop !== button) {
-            fabBtnStop.classList.remove("ai-fab--listening", "ai-fab--processing");
+      let data = null;
+      let isRespOk = resp.ok;
+      try { data = await resp.json(); } catch(e) {}
+      if (data && data.success === false) {
+        isRespOk = false;
+      }
+
+      if (!isRespOk) {
+        const errData = data || null;
+        const errCode = errData?.error?.code;
+        const errMessage = errData?.error?.message;
+        const statusCode = data?.status_code || resp.status;
+
+        if (statusCode === 503 || errCode === "STOREFRONT_CONFIGURATION_MISSING" || errCode === "SHOPIFY_AUTH_FAILED" || errCode === "SHOP_NOT_INSTALLED") {
+          throw new Error(errMessage || "The shopping assistant is not completely configured for this store. Please contact the store administrator.");
+        } else if (statusCode === 403 || errCode === "INVALID_PROXY_SIGNATURE") {
+          throw new Error("Assistant request validation failed. Please refresh the page.");
+        } else {
+          throw new Error(errMessage || "I couldn't reach the shopping service. Please try again.");
+        }
+      }
+      if (turnId === activeTurnId) {
+        isProcessing = false;
+      }
+
+      if (turnId !== activeTurnId || panelManuallyClosed) return;
+      if (currentSeq < _latestHandledSeqNum) return;
+
+      await renderApiResponse(data, responseBox, status, rootNode, turnId);
+    } catch (err) {
+      if (err.name === "AbortError" || turnId !== activeTurnId || panelManuallyClosed) {
+        return;
+      }
+      console.error("[AI Assistant] Voice query processing error:", err);
+      transitionAssistantState(AssistantState.ERROR, rootNode);
+      if (status) status.textContent = err.message || "I couldn't reach the shopping service. Please try again.";
+
+      await finalizeAssistantTurn({
+        turnId,
+        conversationComplete: true,
+        requiresInput: false,
+        autoListen: false
+      }, rootNode);
+    } finally {
+      if (turnId === activeTurnId) {
+        isProcessing = false;
+      }
+    }
+  }
+
+  // ===============================================================
+  // WAKE WORD CONTROLLER (v2.1.5 SAFEGUARDS)
+  // ===============================================================
+  function shouldRestartWakeRecognition() {
+    return (
+      handsFreeEnabled &&
+      microphoneAccessConfirmed &&
+      wakeRestartAllowed &&
+      !wakeSequenceRunning &&
+      !queryRecognitionActive &&
+      !isSpeaking &&
+      !isProcessing &&
+      !destroyed &&
+      document.visibilityState === "visible"
+    );
+  }
+
+  function clearWakeRestartTimer() {
+    if (wakeRestartTimer) {
+      clearTimeout(wakeRestartTimer);
+      wakeRestartTimer = null;
+    }
+  }
+
+  function stopWakeRecognition({ reason = "manual", allowRestart = false } = {}) {
+    wakeRestartAllowed = allowRestart;
+    wakeSessionId += 1;
+    wakeRecognitionActive = false;
+
+    clearWakeRestartTimer();
+
+    try { wakeRecognition?.abort(); } catch (e) {}
+    wakeRecognition = null;
+
+    logWakeEvent("stopped", { reason, allowRestart });
+  }
+
+  function scheduleWakeRecognitionRestart(sessionId, wrapper) {
+    if (!shouldRestartWakeRecognition()) return;
+
+    const delayIndex = Math.min(wakeRestartAttempt, WAKE_RESTART_DELAYS.length - 1);
+    const delayMs = WAKE_RESTART_DELAYS[delayIndex];
+    wakeRestartAttempt += 1;
+
+    logWakeEvent("restart scheduled", { attempt: wakeRestartAttempt, delayMs });
+
+    clearWakeRestartTimer();
+    wakeRestartTimer = setTrackedTimeout(() => {
+      if (shouldRestartWakeRecognition()) {
+        startWakeRecognitionSafely(wrapper);
+      }
+    }, delayMs);
+  }
+
+  async function startWakeRecognitionSafely(wrapperNode) {
+    const wrapper = wrapperNode || getCanonicalRoot() || document;
+    if (!handsFreeEnabled || !microphoneAccessConfirmed || destroyed) return false;
+    if (wakeRecognitionActive) return true;
+    if (queryRecognitionActive || isSpeaking || isProcessing) return false;
+
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      _setStatus("Hands-free wake listening isn’t available in this browser. Tap the microphone to speak.", wrapper);
+      return false;
+    }
+
+    const sessionId = ++wakeSessionId;
+    wakeRestartAllowed = true;
+    logWakeEvent("recognition start requested", { session: sessionId });
+
+    try {
+      if (wakeRecognition) {
+        try { wakeRecognition.abort(); } catch (e) {}
+        wakeRecognition = null;
+      }
+
+      const recognition = new Recognition();
+      wakeRecognition = recognition;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = document.documentElement.lang || "en-US";
+
+      return new Promise((resolve) => {
+        let settled = false;
+
+        const startTimeout = setTrackedTimeout(() => {
+          if (settled) return;
+          settled = true;
+          wakeRecognitionActive = false;
+          logWakeEvent("recognition start timeout", { session: sessionId });
+          resolve(false);
+        }, 2000);
+
+        recognition.onstart = () => {
+          if (sessionId !== wakeSessionId) return;
+
+          clearTimeout(startTimeout);
+          settled = true;
+          wakeRecognitionActive = true;
+          wakeRestartAttempt = 0;
+          logWakeEvent("recognition started", { session: sessionId });
+
+          transitionAssistantState(AssistantState.WAKE_READY, wrapper);
+
+          // Reset retry attempt count only after remaining active continuously for 5 seconds
+          clearTimeout(stabilityTimer);
+          stabilityTimer = setTrackedTimeout(() => {
+            if (sessionId === wakeSessionId && wakeRecognitionActive) {
+              wakeRestartAttempt = 0;
+              logWakeEvent("recognition stability confirmed (5s)");
+            }
+          }, 5000);
+
+          resolve(true);
+        };
+
+        recognition.onresult = (event) => {
+          if (sessionId !== wakeSessionId) return;
+          if (!handsFreeEnabled || !wakeRecognitionActive) return;
+
+          handleWakeRecognitionResult(event, sessionId, wrapper);
+        };
+
+        recognition.onerror = (event) => {
+          if (sessionId !== wakeSessionId) return;
+          logWakeEvent("recognition error", { session: sessionId, error: event?.error });
+
+          handleWakeRecognitionError(event, sessionId, wrapper);
+
+          if (!settled) {
+            clearTimeout(startTimeout);
+            settled = true;
+            wakeRecognitionActive = false;
+            resolve(false);
           }
         };
 
-        // Always stop recognition and release microphone tracks immediately
-        if (recognition) {
-          try { recognition.stop(); } catch (e) {}
-          recognition = null;
-        }
-        if (stream) {
-          try { stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
-          stream = null;
-        }
+        recognition.onend = () => {
+          if (sessionId !== wakeSessionId) return;
 
-        const apiBase = getApiBaseUrl();
+          wakeRecognitionActive = false;
+          logWakeEvent("recognition ended", { session: sessionId });
 
-        const cleanTranscript = speechTranscript
-          .replace(/\[.*?\]/g, "")
-          .replace(/\(.*?\)/g, "")
-          .replace(/^[.\s,!\-?]+|[.\s,!\-?]+$/g, "")
-          .trim();
-
-
-        // Fetch live native Shopify cart state
-        const nativeCart = await getNativeShopifyCart();
-
-        // ── Fast path: use instant in-browser transcription if captured ──
-        if (cleanTranscript && cleanTranscript.length > 1) {
-          console.log("[AI Assistant] ⚡ Fast path using browser STT:", cleanTranscript);
-          try {
-            const response = await fetch(`${apiBase}/voice-text`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                message: cleanTranscript,
-                session_id: getSessionId(),
-                cart_context: nativeCart,
-              }),
-            });
-
-            if (response.ok) {
-              const data = await response.json();
-              resetFabState();
-              renderApiResponse(data, responseBox, status);
-              return;
-            }
-          } catch (err) {
-            console.warn("[AI Assistant] Fast path /voice-text failed, falling back to audio upload:", err);
+          if (shouldRestartWakeRecognition()) {
+            scheduleWakeRecognitionRestart(sessionId, wrapper);
           }
-        }
-
-        // ── Fallback path: upload audio to /voice ─────────────────────────
-        const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-        console.log("[AI Assistant] Audio upload fallback:", audioBlob.type, audioBlob.size, "bytes");
-
-        if (audioBlob.size < 200) {
-          status.textContent = "Recording too short — please try again.";
-          return;
-        }
-
-        const formData = new FormData();
-        formData.append("file", audioBlob, "voice.webm");
-        formData.append("session_id", getSessionId());
+        };
 
         try {
-          const response = await fetch(`${apiBase}/voice`, {
-            method: "POST",
-            body: formData,
-          });
+          recognition.start();
+        } catch (error) {
+          clearTimeout(startTimeout);
+          wakeRecognitionActive = false;
+          logWakeEvent("start exception", error);
+          if (!settled) {
+            settled = true;
+            resolve(false);
+          }
+        }
+      });
+    } catch (err) {
+      wakeRecognitionActive = false;
+      logWakeEvent("start outer exception", err);
+      return false;
+    }
+  }
 
-          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+  function handleWakeRecognitionResult(event, sessionId, wrapper) {
+    if (wakeSequenceRunning || Date.now() - lastWakeActivationAt < WAKE_ACTIVATION_COOLDOWN_MS) return;
 
-          const data = await response.json();
-          resetFabState();
-          renderApiResponse(data, responseBox, status);
+    let transcript = "";
+    for (let index = event.resultIndex; index < event.results.length; index++) {
+      transcript += ` ${event.results[index][0]?.transcript || ""}`;
+    }
 
-        } catch (err) {
-          console.error("[AI Assistant] Voice API error:", err);
-          resetFabState();
-          status.textContent = `⚠️ Error: ${err.message}`;
+    if (!containsWakePhrase(transcript)) return;
+
+    wakeRestartAttempt = 0;
+    logWakeEvent("phrase detected", { session: sessionId });
+    beginWakeActivation(sessionId, wrapper);
+  }
+
+  function handleWakeRecognitionError(event, sessionId, wrapper) {
+    const errName = event?.error || "";
+
+    if (errName === "not-allowed" || errName === "service-not-allowed" || errName === "permission-denied") {
+      microphoneAccessConfirmed = false;
+      microphonePermission = "denied";
+      microphoneHardError = "NotAllowedError";
+      stopWakeRecognition({ reason: "permission-denied", allowRestart: false });
+      transitionAssistantState(AssistantState.ERROR, wrapper);
+      handleMicError({ name: "NotAllowedError" }, wrapper);
+      return;
+    }
+
+    if (errName === "audio-capture" || errName === "no-speech" || errName === "aborted" || errName === "network") {
+      logWakeEvent("interruption error", errName);
+      if (shouldRestartWakeRecognition()) {
+        scheduleWakeRecognitionRestart(sessionId, wrapper);
+      }
+      return;
+    }
+  }
+
+  async function beginWakeActivation(detectedSessionId, wrapperNode) {
+    if (wakeSequenceRunning) return;
+    if (detectedSessionId !== wakeSessionId) return;
+    if (!handsFreeEnabled) return;
+
+    lastWakeActivationAt = Date.now();
+    wakeSequenceRunning = true;
+
+    logWakeEvent("background recognition stopped", { reason: "wake-detected" });
+    stopWakeRecognition({ reason: "wake-detected", allowRestart: false });
+
+    const root = wrapperNode || getCanonicalRoot() || document;
+
+    try {
+      openAssistantPanel("wake-word");
+      transitionAssistantState(AssistantState.WAKING, root);
+
+      await playSmoothWakeChimeWithTimeout();
+
+      // 175ms delay to prevent chime bleeding into query transcription
+      await delay(175);
+
+      if (!handsFreeEnabled || panelManuallyClosed || destroyed) return;
+
+      const turnId = beginAssistantTurn();
+      const started = await startQueryRecognitionSafely({ turnId }, root);
+      if (started) {
+        logWakeEvent("query listener started");
+        transitionAssistantState(AssistantState.LISTENING, root);
+      } else {
+        transitionAssistantState(AssistantState.ERROR, root);
+      }
+    } catch (error) {
+      logWakeEvent("wake activation error", error);
+      if (handsFreeEnabled && !panelManuallyClosed && !destroyed) {
+        const turnId = beginAssistantTurn();
+        await startQueryRecognitionSafely({ turnId }, root);
+      }
+    } finally {
+      wakeSequenceRunning = false;
+    }
+  }
+
+  function stopQueryRecognition() {
+    queryRecognitionActive = false;
+    if (queryRecognition) {
+      try { queryRecognition.abort(); } catch (e) {}
+      queryRecognition = null;
+    }
+  }
+
+  async function startQueryRecognitionSafely(options = {}, wrapperNode) {
+    const { turnId } = options;
+    const root = wrapperNode || getCanonicalRoot() || document;
+
+    const _SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!_SR) {
+      _setStatus("Speech recognition not supported in this browser.", root);
+      return false;
+    }
+
+    stopWakeRecognition({ reason: "query-started", allowRestart: false });
+    stopQueryRecognition();
+
+    stopAllAudioPlayback();
+    queryRecognitionActive = true;
+    transitionAssistantState(AssistantState.LISTENING, root);
+
+    let finalText = "";
+    let interimText = "";
+
+    const maxTimer = setTrackedTimeout(() => {
+      if (queryRecognition && turnId === activeTurnId) {
+        try { queryRecognition.abort(); } catch(e) {}
+      }
+    }, 12000);
+
+    let silenceTimer = null;
+
+    try {
+      const rec = new _SR();
+      queryRecognition = rec;
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = document.documentElement.lang || "en-US";
+
+      rec.onresult = (event) => {
+        if (turnId !== activeTurnId || panelManuallyClosed) return;
+
+        clearTimeout(silenceTimer);
+        let newFinal = "";
+        let currentInterim = "";
+        for (let i = 0; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            newFinal += " " + event.results[i][0].transcript;
+          } else {
+            currentInterim += " " + event.results[i][0].transcript;
+          }
+        }
+        finalText = newFinal.trim();
+        interimText = currentInterim.trim();
+
+        const currentDisplay = (finalText ? finalText + " " + interimText : interimText).replace(/\s+/g, " ").trim();
+        _hideSuggestionChips(root);
+        _setStatus("Listening…", root);
+        if (currentDisplay) {
+          _setCustomerTranscription(`“${currentDisplay}”`, root);
+        } else {
+          _clearCustomerTranscription(root);
+        }
+
+        silenceTimer = setTrackedTimeout(() => {
+          if (queryRecognition === rec && turnId === activeTurnId) {
+            try { rec.stop(); } catch(e) {}
+          }
+        }, 1400);
+      };
+
+      rec.onend = () => {
+        clearTimeout(silenceTimer);
+        clearTimeout(maxTimer);
+        queryRecognitionActive = false;
+        queryRecognition = null;
+
+        if (turnId !== activeTurnId || panelManuallyClosed) return;
+
+        const query = (finalText || interimText).replace(/\s+/g, " ").trim();
+        if (query.length > 1) {
+          isProcessing = true;
+          transitionAssistantState(AssistantState.PROCESSING, root);
+          _processQuery(query, root);
+        } else {
+          handleNoQuery(turnId, root);
         }
       };
 
-      mediaRecorder.start(250);
-      status.textContent = "🎙️ Listening… tap again to stop.";
-      // Apply listening state via CSS class (no inline style override)
-      button.style.background = "";
-      button.classList.add("ai-fab--listening");
-      const fabBtnListen = container ? container.querySelector(".ai-fab-btn") : null;
-      if (fabBtnListen && fabBtnListen !== button) {
-        fabBtnListen.classList.add("ai-fab--listening");
-      }
+      rec.onerror = (e) => {
+        clearTimeout(silenceTimer);
+        clearTimeout(maxTimer);
+        queryRecognitionActive = false;
+        queryRecognition = null;
 
-    } catch (err) {
-      console.error("[AI Assistant] Microphone error:", err.name, err.message);
+        if (turnId !== activeTurnId || panelManuallyClosed) return;
 
-      // Surface a human-readable error in the widget
-      const messages = {
-        NotAllowedError:  "🚫 Microphone permission denied. Please allow mic access in your browser settings and try again.",
-        NotFoundError:    "🎤 No microphone found. Please connect a microphone and try again.",
-        NotReadableError: "🎤 Microphone is in use by another app. Close other apps and try again.",
-        SecurityError:    "🔒 Microphone blocked — page must be on HTTPS.",
-        AbortError:       "Microphone request was cancelled. Please try again.",
+        if (e.error === "aborted" || e.error === "no-speech") {
+          handleNoQuery(turnId, root);
+          return;
+        }
+        handleMicError(e, root);
       };
-      status.textContent = messages[err.name] || `Microphone error: ${err.message}`;
 
-      // Reset visual state on error
-      button.classList.remove("ai-fab--listening", "ai-fab--processing");
-      button.style.background = "";
-      const fabBtnErr = container ? container.querySelector(".ai-fab-btn") : null;
-      if (fabBtnErr && fabBtnErr !== button) {
-        fabBtnErr.classList.remove("ai-fab--listening", "ai-fab--processing");
-      }
-
-      if (stream) {
-        stream.getTracks().forEach((t) => t.stop());
-        stream = null;
-      }
-      mediaRecorder = null;
+      rec.start();
+      microphoneAccessConfirmed = true;
+      microphonePermission = "granted";
+      microphoneHardError = null;
+      return true;
+    } catch(e) {
+      queryRecognitionActive = false;
+      handleMicError(e, root);
+      return false;
     }
-  });
-}
+  }
 
-// ---------------------------------------------------------------
-// Check and auto-play pending speech response when landing on new page
-// ---------------------------------------------------------------
-function checkPendingSpeakResponse() {
-  try {
-    const raw = sessionStorage.getItem("ai_pending_speak_response");
-    if (!raw) return;
+  function handleNoQuery(turnId, root) {
+    if (turnId !== activeTurnId || panelManuallyClosed) return;
+    finalizeAssistantTurn({
+      turnId,
+      conversationComplete: true,
+      requiresInput: false,
+      autoListen: false
+    }, root);
+  }
 
-    sessionStorage.removeItem("ai_pending_speak_response");
-    const data = JSON.parse(raw);
-    data._fromPendingRestore = true;
+  async function enableHandsFreeFromUserGesture(wrapperNode) {
+    if (handsFreeEnableInFlight) return;
+    handsFreeEnableInFlight = true;
 
-    setTimeout(() => {
-      // Support both old inline widget and new floating panel
-      const container   = document.querySelector(".ai-fab-wrapper") || document.querySelector(".ai-shopping-assistant");
-      const status      = container ? container.querySelector(".ai-assistant-status") : document.querySelector(".ai-assistant-status");
-      const responseBox = container ? container.querySelector(".ai-assistant-response") : document.querySelector(".ai-assistant-response");
+    const wrapper = wrapperNode || getCanonicalRoot() || document;
+    unlockAssistantAudio();
 
-      if (data && data.answer) {
-        console.log("[AI Assistant] 🔊 Auto-speaking response on new collection page:", data);
-        // Also open the panel so the user sees the response
-        const panel  = container ? container.querySelector(".ai-chat-panel") : null;
-        if (panel && !panel.classList.contains("ai-open")) panel.classList.add("ai-open");
-        renderApiResponse(data, responseBox, status);
+    try {
+      logWakeEvent("hands-free enable clicked");
 
-        // After TTS finishes speaking on the new page, conditionally reopen mic if question was asked
-        _waitForTTSEnd(() => {
-          if (!isHandsFreeEnabled()) return;
+      if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        microphoneAccessConfirmed = true;
+        microphonePermission = "granted";
+        microphoneHardError = null;
 
-          const requiresInput = !!(data && data.requires_input);
+        stream.getTracks().forEach(track => track.stop());
+        logWakeEvent("microphone access confirmed");
+      } else {
+        microphoneAccessConfirmed = true;
+      }
 
-          if (requiresInput) {
-            setTimeout(() => {
-              if (!isHandsFreeEnabled()) return;
-              _openPanel();
-              _state = "listening";
-              _setFabState("listening");
-              _setStatus("Listening for your answer…");
-              _startQueryCapture(true /* isFollowUp */);
-            }, 400);
+      handsFreeEnabled = true;
+      try { localStorage.setItem("ai_hands_free_enabled", "true"); } catch (e) {}
+      wakeRestartAttempt = 0;
+
+      const started = await startWakeRecognitionSafely(wrapper);
+      if (started) {
+        transitionAssistantState(AssistantState.WAKE_READY, wrapper);
+      } else {
+        transitionAssistantState(AssistantState.ERROR, wrapper);
+        _setStatus("Hands-free wake listening isn’t available. Tap the microphone to speak.", wrapper);
+      }
+    } catch (error) {
+      logWakeEvent("microphone permission error", error);
+      microphoneAccessConfirmed = false;
+      handsFreeEnabled = false;
+      try { localStorage.setItem("ai_hands_free_enabled", "false"); } catch (e) {}
+
+      const checkbox = wrapper?.querySelector(".ai-ww-enable-btn");
+      if (checkbox) checkbox.checked = false;
+
+      handleMicError(error, wrapper);
+    } finally {
+      handsFreeEnableInFlight = false;
+    }
+  }
+
+  function disableHandsFree(wrapperNode) {
+    handsFreeEnabled = false;
+    try { localStorage.setItem("ai_hands_free_enabled", "false"); } catch (e) {}
+    stopWakeRecognition({ reason: "user-disabled", allowRestart: false });
+
+    const wrapper = wrapperNode || getCanonicalRoot() || document;
+    const checkbox = wrapper?.querySelector?.(".ai-ww-enable-btn");
+    if (checkbox) checkbox.checked = false;
+
+    transitionAssistantState(AssistantState.IDLE, wrapper);
+  }
+
+  const AiWakeWord = {
+    enable(wrapper) {
+      return enableHandsFreeFromUserGesture(wrapper);
+    },
+    disable(wrapper) {
+      disableHandsFree(wrapper);
+    },
+    isEnabled() {
+      return handsFreeEnabled;
+    },
+    stopWakeRec() {
+      stopWakeRecognition({ reason: "api-call", allowRestart: false });
+    },
+    stopQueryRec() {
+      stopQueryRecognition();
+    },
+    toggleDirectQuery(wrapper) {
+      const root = wrapper || getCanonicalRoot() || document;
+      openAssistantPanel("mic-button");
+
+      if (queryRecognitionActive || queryRecognition) {
+        cancelActiveTurn("mic-toggle-off");
+        finalizeAssistantTurn({
+          turnId: activeTurnId,
+          conversationComplete: true,
+          requiresInput: false,
+          autoListen: false
+        }, root);
+        return;
+      }
+
+      const turnId = beginAssistantTurn();
+      startQueryRecognitionSafely({ turnId }, root);
+    },
+    triggerDirectQuery(wrapper) {
+      const root = wrapper || getCanonicalRoot() || document;
+      openAssistantPanel("direct-trigger");
+
+      const turnId = beginAssistantTurn();
+      startQueryRecognitionSafely({ turnId }, root);
+    },
+    resumeWakeListening(wrapper) {
+      const root = wrapper || getCanonicalRoot() || document;
+      if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+        return startWakeRecognitionSafely(root);
+      } else {
+        stopWakeRecognition({ reason: "resume-cancelled", allowRestart: false });
+        transitionAssistantState(AssistantState.IDLE, root);
+        return Promise.resolve(false);
+      }
+    },
+    init(wrapper) {
+      const checkbox = wrapper.querySelector(".ai-ww-enable-btn");
+      if (checkbox) {
+        checkbox.checked = handsFreeEnabled;
+
+        checkbox.addEventListener("change", () => {
+          unlockAssistantAudio();
+          if (checkbox.checked) {
+            void enableHandsFreeFromUserGesture(wrapper);
           } else {
-            _hasAskedAreYouStillThere = false;
-            setTimeout(_toStandby, 800);
+            disableHandsFree(wrapper);
           }
         });
       }
-    }, 400);
-  } catch (e) {
-    console.warn("[AI Assistant] Error restoring pending speech:", e);
-  }
-}
 
-// ---------------------------------------------------------------
-// Attach to all existing buttons + watch for dynamically added ones
-// ---------------------------------------------------------------
-
-// ---------------------------------------------------------------
-// Refresh native Shopify cart UI (handles browser Back button & page restores)
-// ---------------------------------------------------------------
-async function refreshNativeCart() {
-  try {
-    const res = await fetch("/cart.js");
-    if (!res.ok) return;
-    const cart = await res.json();
-    const count = cart.item_count || 0;
-
-    // Update all cart count badges in theme header
-    document.querySelectorAll(
-      ".cart-count-bubble, .cart__count, [data-cart-count], .header__icon--cart .badge, .cart-count"
-    ).forEach(el => {
-      el.textContent = count;
-      if (count > 0) el.removeAttribute("hidden");
-      else el.setAttribute("hidden", "true");
-    });
-
-    // Fetch fresh cart section HTML to update drawer and icon bubble
-    try {
-      const sectionRes = await fetch("/?sections=cart-drawer,cart-icon-bubble");
-      if (sectionRes.ok) {
-        const sections = await sectionRes.json();
-        if (sections["cart-drawer"]) {
-          const drawer = document.querySelector("cart-drawer");
-          if (drawer) {
-            const parser = new DOMParser();
-            const parsedHtml = parser.parseFromString(sections["cart-drawer"], "text/html");
-            const newDrawer = parsedHtml.querySelector("cart-drawer");
-            if (newDrawer) drawer.innerHTML = newDrawer.innerHTML;
-            if (count === 0) drawer.classList.add("is-empty");
-            else drawer.classList.remove("is-empty");
+      wrapper.querySelectorAll(".ai-chip").forEach(chip => {
+        chip.addEventListener("click", async () => {
+          unlockAssistantAudio();
+          const query = chip.getAttribute("data-query");
+          if (query) {
+            openAssistantPanel("chip");
+            _processQuery(query, wrapper);
           }
-        }
-        if (sections["cart-icon-bubble"]) {
-          const bubble = document.querySelector("#cart-icon-bubble");
-          if (bubble) {
-            const parser = new DOMParser();
-            const parsedHtml = parser.parseFromString(sections["cart-icon-bubble"], "text/html");
-            const newBubble = parsedHtml.querySelector("#cart-icon-bubble");
-            if (newBubble) bubble.innerHTML = newBubble.innerHTML;
-          }
+        });
+      });
+
+      if (handsFreeEnabled && !microphoneHardError) {
+        microphoneAccessConfirmed = true;
+        if (!wakeRecognitionActive && !queryRecognitionActive && !isSpeaking && !isProcessing) {
+          startWakeRecognitionSafely(wrapper).then(started => {
+            if (started) {
+              transitionAssistantState(AssistantState.WAKE_READY, wrapper);
+            }
+          });
         }
       }
-    } catch (e) {}
-
-    document.dispatchEvent(new CustomEvent("cart:refresh", { bubbles: true }));
-    document.dispatchEvent(new CustomEvent("cart:updated", { bubbles: true }));
-  } catch (e) {}
-}
-
-// Automatically refresh cart UI when returning to page (Browser Back button / bfcache restore / tab focus)
-window.addEventListener("pageshow", (event) => {
-  if (event.persisted || (performance.getEntriesByType("navigation")[0] && performance.getEntriesByType("navigation")[0].type === "back_forward")) {
-    refreshNativeCart();
-  }
-});
-window.addEventListener("focus", refreshNativeCart);
-
-// ================================================================
-// WAKE-WORD HANDS-FREE SYSTEM
-// State: disabled → standby → listening → processing → speaking → standby
-// Triggered by "Hey Assistant" (case-insensitive, pronunciation-tolerant)
-// ================================================================
-
-;(function() {
-"use strict";
-
-const _SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-// Wake phrases — covers common mishearings / browser misrecognitions
-const WAKE_PHRASES = [
-  "hey assistant", "hey, assistant", "hey assistance", "hi assistant",
-  "hay assistant", "hey a system", "hey assistance", "hey assistants",
-  "hey assistant,", "hello assistant", "ok assistant", "okay assistant",
-  "hey assistent", "hey persistent", "hey system", "hey assist", "assistant",
-  "hey shopify", "hey shopping", "hey shopping assistant", "computer"
-];
-
-const CFG = {
-  queryTimeoutMs:   7000,   // Max silence before "I didn't hear anything"
-  maxQueryMs:       15000,  // Hard cap on a single query recording
-  panelCloseDelayMs:3200,   // Pause after speaking before auto-closing
-  restartDelayMs:   600,    // Debounce before restarting wake recognition
-};
-
-// ── Module state ────────────────────────────────────────────────
-let _state    = "disabled"; // disabled|standby|listening|processing|speaking
-let _wrapper  = null;
-let _enabled  = false;
-let _wakeRec  = null;       // Continuous SpeechRecognition for wake word
-let _queryRec = null;       // One-shot SpeechRecognition for shopping query
-let _queryTimer   = null;
-let _ttsInterval  = null;
-
-// ── Helpers ──────────────────────────────────────────────────────
-
-function _matchWake(text) {
-  const norm = text.toLowerCase()
-    .replace(/[',\.\!\?]/g, " ")
-    .replace(/\s+/g, " ").trim();
-  if (WAKE_PHRASES.some(p => norm.includes(p))) return true;
-  const words = norm.split(" ");
-  const hasGreeting = words.some(w => ["hey", "hi", "hay", "hello", "ok", "okay"].includes(w));
-  const hasAssistant = words.some(w => ["assistant", "assistent", "assistance", "assistants", "system", "shopify"].includes(w));
-  return hasGreeting && hasAssistant;
-}
-
-function _extractInlineQuery(text) {
-  const norm = text.toLowerCase().replace(/[',\.\!\?]/g, " ").replace(/\s+/g, " ");
-  for (const p of WAKE_PHRASES) {
-    const idx = norm.indexOf(p.replace(/,/g, "").replace(/\s+/g, " "));
-    if (idx !== -1) {
-      const after = text.slice(idx + p.length).replace(/^[\s,\.!\-]+/, "").trim();
-      if (after.length > 1) return after;
     }
-  }
-  return "";
-}
+  };
 
-function _playBeep() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(680, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.28, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-    osc.start(); osc.stop(ctx.currentTime + 0.3);
-    setTimeout(() => { try { ctx.close(); } catch(e) {} }, 700);
-  } catch(e) {}
-}
+  window.AiWakeWord = AiWakeWord;
 
-// ── UI helpers ───────────────────────────────────────────────────
-
-function _q(sel) { return _wrapper ? _wrapper.querySelector(sel) : null; }
-
-function _setStatus(text) {
-  const s = _q(".ai-assistant-status");
-  if (s) s.textContent = text;
-}
-
-function _setFabState(stateName) {
-  const fab  = _q(".ai-fab-btn");
-  const dot  = _q(".ai-ww-dot");
-  const wave = _q(".ai-panel-mic-area");
-  if (fab) {
-    fab.classList.remove(
-      "ai-fab--listening","ai-fab--processing",
-      "ai-fab--speaking","ai-fab--standby","ai-fab--disabled"
+  // ===============================================================
+  // RECONCILE-BASED INITIALIZATION & LIFECYCLE CONTROLLER
+  // ===============================================================
+  function getCanonicalRoot() {
+    const roots = [...document.querySelectorAll("[data-ai-assistant-root]")];
+    if (!roots.length) return null;
+    return (
+      roots.find(root => root.dataset.installationType === "app-embed") ||
+      roots[0] ||
+      null
     );
-    if (stateName) fab.classList.add("ai-fab--" + stateName);
   }
-  if (dot) {
-    dot.className = "ai-ww-dot ai-ww-dot--" + (stateName || "disabled");
-  }
-  // Toggle speaking wave class on mic area
-  if (wave) {
-    wave.classList.toggle("ai-wave--speaking", stateName === "speaking");
-  }
-}
 
-function _openPanel() {
-  const panel = _q(".ai-chat-panel");
-  if (!panel) return;
-  panel.classList.add("ai-open");
-  panel.setAttribute("aria-hidden", "false");
-  if (_wrapper) _wrapper.classList.add("ai-panel-open");
-  const fab = _q(".ai-fab-btn");
-  if (fab) {
-    fab.setAttribute("aria-expanded", "true");
-    fab.setAttribute("aria-label", "Close AI Shopping Assistant");
-  }
-}
+  async function handleMicrophoneAction(rootNode = document) {
+    unlockAssistantAudio();
 
-function _closePanel() {
-  const panel = _q(".ai-chat-panel");
-  if (!panel) return;
-  panel.classList.remove("ai-open");
-  panel.setAttribute("aria-hidden", "true");
-  if (_wrapper) _wrapper.classList.remove("ai-panel-open");
-  const fab = _q(".ai-fab-btn");
-  if (fab) {
-    fab.setAttribute("aria-expanded", "false");
-    fab.setAttribute("aria-label", "Open voice shopping assistant");
-  }
-}
-
-function _updateEnableBtn(enabled) {
-  const btn = _q(".ai-ww-enable-btn");
-  if (!btn) return;
-  btn.checked = !!enabled;
-  btn.setAttribute("aria-checked", enabled ? "true" : "false");
-}
-
-// ── Wake-word recognition ────────────────────────────────────────
-
-function _startWakeRec() {
-  if (!_SR || !_enabled || _state !== "standby") return;
-  if (_wakeRec) { try { _wakeRec.abort(); } catch(e) {} _wakeRec = null; }
-
-  _wakeRec = new _SR();
-  _wakeRec.continuous     = true;
-  _wakeRec.interimResults = true;
-  _wakeRec.lang           = "en-US";
-  _wakeRec.maxAlternatives = 3;
-
-  _wakeRec.onresult = (event) => {
-    if (_state !== "standby") return;
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const res = event.results[i];
-      for (let j = 0; j < res.length; j++) {
-        const t = res[j].transcript || "";
-        if (_matchWake(t)) { _onWakeDetected(t); return; }
-      }
-    }
-  };
-
-  _wakeRec.onerror = (e) => {
-    if (e.error === "aborted" || e.error === "no-speech") {
-      return;
-    }
-    console.warn("[AiWakeWord] Wake recognition error:", e.error);
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      _setStatus("⚠️ Mic blocked. Click mic button to grant permission.");
-      return;
-    }
-    if (!_enabled || _state !== "standby") return;
-    setTimeout(_startWakeRec, 1500);
-  };
-
-  _wakeRec.onend = () => {
-    if (_enabled && _state === "standby") {
-      setTimeout(_startWakeRec, CFG.restartDelayMs);
-    }
-  };
-
-  try {
-    _wakeRec.start();
-  } catch(e) {
-    console.warn("[AiWakeWord] start() exception:", e);
-    if (_enabled && _state === "standby") setTimeout(_startWakeRec, 2000);
-  }
-}
-
-function _stopWakeRec() {
-  if (_wakeRec) {
-    try { _wakeRec.abort(); } catch(e) {}
-    _wakeRec = null;
-  }
-}
-
-// ── Wake detected ────────────────────────────────────────────────
-
-function _onWakeDetected(transcript) {
-  if (_state !== "standby") return;
-  _stopWakeRec();
-  _playBeep();
-  _openPanel();
-
-  const inlineQuery = _extractInlineQuery(transcript);
-  if (inlineQuery.length > 1) {
-    _state = "processing";
-    _setFabState("processing");
-    _setStatus(`Processing: "${inlineQuery}"`);
-    _processQuery(inlineQuery);
-  } else {
-    _state = "listening";
-    _setFabState("listening");
-    _setStatus("I'm listening…");
-    _startQueryCapture();
-  }
-}
-
-// ── Module state ────────────────────────────────────────────────
-let _hasAskedAreYouStillThere = false;
-
-// ── Query capture ────────────────────────────────────────────────
-
-function _startQueryCapture(isFollowUp = false) {
-  if (_queryRec) { try { _queryRec.abort(); } catch(e) {} _queryRec = null; }
-  clearTimeout(_queryTimer);
-
-  let finalText   = "";
-  let interimText = "";
-
-  const handleTimeoutOrNoSpeech = () => {
-    if (isFollowUp && !_hasAskedAreYouStillThere) {
-      _hasAskedAreYouStillThere = true;
-      _state = "speaking"; _setFabState("speaking");
-      const msg = "Are you still there?";
-      _setStatus(msg);
-      const status = _q(".ai-assistant-status");
-      speakTextWithBrowserSpeech(msg, status);
-      _waitForTTSEnd(() => {
-        if (!_enabled) return;
-        setTimeout(() => {
-          if (!_enabled) return;
-          _openPanel();
-          _state = "listening"; _setFabState("listening");
-          _setStatus("Listening for your answer…");
-          _startQueryCapture(true);
-        }, 400);
-      });
-    } else {
-      _hasAskedAreYouStillThere = false;
-      _handleNoQuery();
-    }
-  };
-
-  // 7-second silence timeout
-  _queryTimer = setTimeout(() => {
-    if (_queryRec) { try { _queryRec.abort(); } catch(e) {} _queryRec = null; }
-    if (!finalText.trim()) {
-      handleTimeoutOrNoSpeech();
-    }
-  }, CFG.queryTimeoutMs);
-
-  // 15-second hard max
-  const maxTimer = setTimeout(() => {
-    if (_queryRec) { try { _queryRec.abort(); } catch(e) {} }
-  }, CFG.maxQueryMs);
-
-  let silenceTimer = null;
-
-  _queryRec = new _SR();
-  _queryRec.continuous     = true;
-  _queryRec.interimResults = true;
-  _queryRec.lang           = "en-US";
-  _queryRec.maxAlternatives = 1;
-
-  _queryRec.onresult = (event) => {
-    clearTimeout(_queryTimer);
-    clearTimeout(silenceTimer);
-    let newFinal = "";
-    let currentInterim = "";
-    for (let i = 0; i < event.results.length; i++) {
-      if (event.results[i].isFinal) {
-        newFinal += " " + event.results[i][0].transcript;
-      } else {
-        currentInterim += " " + event.results[i][0].transcript;
-      }
-    }
-    finalText = newFinal.trim();
-    interimText = currentInterim.trim();
-
-    const currentDisplay = (finalText ? finalText + " " + interimText : interimText).replace(/\s+/g, " ").trim();
-    _hideSuggestionChips();
-    _setStatus("Listening…");
-    if (currentDisplay) {
-      _setCustomerTranscription(`“${currentDisplay}”`);
-    } else {
-      _clearCustomerTranscription();
-    }
-    _state = "listening"; _setFabState("listening");
-
-    // Wait 1.4s of silence after last spoken phrase before finalizing
-    silenceTimer = setTimeout(() => {
-      if (_queryRec) {
-        try { _queryRec.stop(); } catch(e) {}
-      }
-    }, 1400);
-  };
-
-  _queryRec.onend = () => {
-    clearTimeout(_queryTimer);
-    clearTimeout(silenceTimer);
-    clearTimeout(maxTimer);
-    _queryRec = null;
-    const query = (finalText || interimText).replace(/\s+/g, " ").trim();
-    if (query.length > 1) {
-      _hasAskedAreYouStillThere = false;
-      _state = "processing"; _setFabState("processing");
-      _processQuery(query);
-    } else {
-      handleTimeoutOrNoSpeech();
-    }
-  };
-
-  _queryRec.onerror = (e) => {
-    clearTimeout(_queryTimer);
-    clearTimeout(silenceTimer);
-    clearTimeout(maxTimer);
-    _queryRec = null;
-    if (e.error === "no-speech" || e.error === "network") {
-      handleTimeoutOrNoSpeech();
-      return;
-    }
-    if (e.error === "aborted") return;
-    _hasAskedAreYouStillThere = false;
-    _handleNoQuery();
-  };
-
-  try {
-    _queryRec.start();
-  } catch(e) {
-    _hasAskedAreYouStillThere = false;
-    _handleNoQuery();
-  }
-}
-
-function _stopQueryRec() {
-  if (_queryRec) {
-    try { _queryRec.abort(); } catch(e) {}
-    _queryRec = null;
-  }
-  clearTimeout(_queryTimer);
-  _queryTimer = null;
-  _hasAskedAreYouStillThere = false;
-}
-
-// ── Process query ────────────────────────────────────────────────
-
-async function _processQuery(query) {
-  _stopQueryRec();
-  const responseBox = _q(".ai-assistant-response");
-  const status      = _q(".ai-assistant-status");
-
-  const isObj = typeof query === "object" && query !== null;
-  const msgStr = isObj ? (query.text || query.collection_title || query.collection_handle || "Select collection") : String(query);
-
-  _hideSuggestionChips();
-  _setCustomerTranscription(`You said: “${msgStr}”`);
-  _setFabState("processing");
-  _setStatus("Finding the best options…");
-
-  const currentSeq = ++_reqSeqNum;
-
-  try {
-    const apiBase   = getApiBaseUrl();
-    const nativeCart = await getNativeShopifyCart();
-    const requestBody = isObj ? {
-      message: msgStr,
-      session_id: getSessionId(),
-      cart_context: nativeCart,
-      sequence_num: currentSeq,
-      intent: query.intent,
-      collection_id: query.collection_id,
-      collection_handle: query.collection_handle,
-    } : {
-      message: msgStr,
-      session_id: getSessionId(),
-      cart_context: nativeCart,
-      sequence_num: currentSeq,
-    };
-
-    const resp = await fetch(`${apiBase}/voice-text`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(requestBody),
-    });
-
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-
-    if (currentSeq < _latestHandledSeqNum) {
-      console.warn(`[AiWakeWord] Discarding stale response seq ${currentSeq} (latest handled: ${_latestHandledSeqNum})`);
-      return;
-    }
-    _latestHandledSeqNum = currentSeq;
-
-    _state = "speaking"; _setFabState("speaking");
-    _setStatus("Speaking response…");
-
-    // Render response + cart sync (uses existing renderApiResponse)
-    renderApiResponse(data, responseBox, status);
-
-    // After TTS finishes, check structured intent flags returned by backend
-    _waitForTTSEnd(() => {
-      if (currentSeq !== _latestHandledSeqNum) {
-        console.warn(`[AiWakeWord] Stale completion callback seq ${currentSeq} ignored.`);
-        return;
-      }
-
-      if (data && data.disable_hands_free) {
-        window.AiWakeWord.disable();
-        return;
-      }
-
-      const isComplete = !!(data && (data.conversation_complete || data.stage === "complete" || data.auto_close));
-      const requiresInput = !!(data && data.requires_input && data.auto_listen !== false);
-      const isImmediateClose = !!(data && (data.immediate_close || data.intent === "close_assistant"));
-
-      if (isImmediateClose) {
-        _stopQueryRec();
-        _hasAskedAreYouStillThere = false;
-        closeCompletedConversation();
-        return;
-      }
-
-      if (isComplete && !requiresInput) {
-        _setFabState("speaking");
-        setTimeout(() => {
-          if (currentSeq !== _latestHandledSeqNum) return;
-          closeCompletedConversation();
-        }, 1500);
-        return;
-      }
-
-      if (requiresInput) {
-        // Wait 300-500ms after TTS finishes before reopening mic for user's answer
-        setTimeout(() => {
-          if (currentSeq !== _latestHandledSeqNum) return;
-          _openPanel();
-          _state = "listening";
-          _setFabState("listening");
-          _setStatus("Listening for your answer…");
-          _startQueryCapture(true /* isFollowUp */);
-        }, 400);
-      } else {
-        _hasAskedAreYouStillThere = false;
-        if (isHandsFreeEnabled()) {
-          setTimeout(_toStandby, 800);
-        }
-      }
-    });
-
-  } catch(err) {
-    console.error("[AiWakeWord] Query error:", err);
-    _hasAskedAreYouStillThere = false;
-    const msg = "Sorry, I ran into a temporary issue. Please try again.";
-    _setStatus("⚠️ " + msg);
-    speakTextWithBrowserSpeech(msg, _q(".ai-assistant-status"), () => {
-      if (_enabled) {
-        setTimeout(() => {
-          if (!_enabled) return;
-          _openPanel();
-          _state = "listening";
-          _setFabState("listening");
-          _setStatus("Listening for your answer…");
-          _startQueryCapture(true /* isFollowUp */);
-        }, 500);
-      }
-    });
-  }
-}
-
-// Wait for response audio (HTML5 Audio or Web Speech TTS) to finish
-function _waitForTTSEnd(callback) {
-  let called = false;
-  const done = () => {
-    if (called) return;
-    called = true;
-    if (_ttsInterval) clearInterval(_ttsInterval);
-    _ttsInterval = null;
-    callback();
-  };
-
-  // Give audio/speech 300ms to start before we poll
-  setTimeout(() => {
-    const isSpeaking = () => {
-      const isAudioPlaying = !!(_currentPlayingAudio && !_currentPlayingAudio.paused && !_currentPlayingAudio.ended);
-      const isSpeechSpeaking = !!(window.speechSynthesis && window.speechSynthesis.speaking);
-      return isAudioPlaying || isSpeechSpeaking;
-    };
-
-    if (!isSpeaking()) {
-      done();
+    if (!panelOpen) {
+      openAssistantPanel("mic-action");
+      const turnId = beginAssistantTurn();
+      const started = await startQueryRecognitionSafely({
+        turnId,
+        source: "mic-click"
+      }, rootNode);
+      transitionAssistantState(started || !microphoneHardError ? AssistantState.LISTENING : AssistantState.ERROR, rootNode);
       return;
     }
 
-    _ttsInterval = setInterval(() => {
-      if (!isSpeaking()) done();
-    }, 250);
-
-    // Safety timeout of 30 seconds
-    setTimeout(done, 30000);
-  }, 300);
-}
-
-// ── State transitions ────────────────────────────────────────────
-
-function closeCompletedConversation() {
-  _stopQueryRec();
-  _stopWakeRec();
-  clearTimeout(_queryTimer);
-  clearInterval(_ttsInterval);
-  _ttsInterval = null;
-  _hasAskedAreYouStillThere = false;
-
-  const panel = _q(".ai-chat-panel");
-  if (panel) {
-    panel.classList.remove("ai-open");
-    panel.setAttribute("aria-hidden", "true");
-  }
-  if (_wrapper) _wrapper.classList.remove("ai-panel-open");
-
-  const fab = _q(".ai-fab-btn");
-  if (fab) {
-    fab.hidden = false;
-    fab.removeAttribute("tabindex");
-    fab.setAttribute("aria-expanded", "false");
-    fab.setAttribute("aria-label", "Open AI Shopping Assistant");
-    try { fab.focus(); } catch(e) {}
-  }
-
-  setTimeout(() => {
-    const responseBox = _q(".ai-assistant-response");
-    if (responseBox) {
-      responseBox.style.display = "none";
-      responseBox.innerHTML = "";
+    if (isSpeaking) {
+      cancelAssistantTts("mic-interrupt");
+      await delay(100);
+      const turnId = beginAssistantTurn();
+      const started = await startQueryRecognitionSafely({
+        turnId,
+        source: "mic-speaking-interrupt"
+      }, rootNode);
+      transitionAssistantState(started || !microphoneHardError ? AssistantState.LISTENING : AssistantState.ERROR, rootNode);
+      return;
     }
-    _clearCustomerTranscription();
-    _showSuggestionChips();
-  }, 350);
 
-  if (isHandsFreeEnabled()) {
-    _toStandby();
-  } else {
-    _state = "idle";
-    _setFabState(null);
-    _setStatus("Tap the microphone to start");
-    _clearCustomerTranscription();
-    _showSuggestionChips();
-  }
-}
-
-function _toStandby() {
-  _stopQueryRec();
-  _state = "standby";
-  _setFabState("standby");
-  _setStatus('Say "Hey Assistant" to start');
-  _clearCustomerTranscription();
-  _showSuggestionChips();
-  _startWakeRec();
-}
-
-function _handleNoQuery() {
-  const msg = "I didn't hear anything. Say \"Hey Assistant\" to try again.";
-  _state = "speaking"; _setFabState("speaking");
-  _setStatus(msg);
-  speakTextWithBrowserSpeech(msg, _q(".ai-assistant-status"));
-  setTimeout(() => { if (_enabled) _toStandby(); }, 3500);
-}
-
-function _handleError(msg) {
-  _state = "speaking"; _setFabState("speaking");
-  _setStatus("⚠️ " + msg);
-  speakTextWithBrowserSpeech(msg, _q(".ai-assistant-status"), () => {
-    if (_enabled) setTimeout(_toStandby, 800);
-  });
-}
-
-// ── Public API ───────────────────────────────────────────────────
-
-window.AiWakeWord = {
-  isSupported() { return !!_SR; },
-  isEnabled() { return _enabled; },
-
-  enable(wrapper) {
-    if (!_SR) {
-      const s = wrapper ? wrapper.querySelector(".ai-assistant-status") : null;
-      if (s) s.textContent = "⚠️ Hands-free not supported in this browser. Use the mic button.";
-      return false;
+    if (queryRecognitionActive) {
+      stopQueryRecognition();
+      transitionAssistantState(AssistantState.PROCESSING, rootNode);
+      return;
     }
-    _wrapper = wrapper;
-    _enabled = true;
-    try {
-      localStorage.setItem("ai_handsfree", "1");
-      sessionStorage.setItem("ai_handsfree", "1");
-    } catch(e) {}
-    _updateEnableBtn(true);
-    _toStandby();
-    return true;
-  },
 
-  disable() {
-    _enabled = false;
-    _stopWakeRec();
-    if (_queryRec) { try { _queryRec.abort(); } catch(e) {} _queryRec = null; }
-    clearTimeout(_queryTimer);
-    clearInterval(_ttsInterval);
-    try {
-      localStorage.removeItem("ai_handsfree");
-      sessionStorage.removeItem("ai_handsfree");
-    } catch(e) {}
-    _state = "disabled";
-    _setFabState(null);         // Remove all state classes → default royal blue
-    _setStatus("Tap the microphone to start");
-    _updateEnableBtn(false);
-  },
+    stopWakeRecognition({ reason: "mic-click", allowRestart: false });
+    const turnId = beginAssistantTurn();
+    const started = await startQueryRecognitionSafely({
+      turnId,
+      source: "mic-manual-start"
+    }, rootNode);
+    transitionAssistantState(started || !microphoneHardError ? AssistantState.LISTENING : AssistantState.ERROR, rootNode);
+  }
 
-  init(wrapper) {
-    _wrapper = wrapper;
+  function initializeAssistant(root) {
+    destroyed = false;
+    listenerController = new AbortController();
+    const signal = listenerController.signal;
 
-    const checkbox = wrapper.querySelector(".ai-ww-enable-btn");
-    if (checkbox) {
-      checkbox.addEventListener("change", () => {
-        if (checkbox.checked) {
-          window.AiWakeWord.enable(wrapper);
+    // Event Delegation for all widget buttons to support multiple widget injections
+    document.addEventListener("click", (e) => {
+      const dynamicRoot = e.target.closest(".ai-fab-wrapper") || root;
+
+      // FAB button click (toggles panel)
+      const fabBtn = e.target.closest(".ai-fab-btn");
+      if (fabBtn && dynamicRoot.contains(fabBtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof panelOpen !== 'undefined' && panelOpen) {
+          closeAssistantPanel({ source: "fab-click" });
         } else {
-          window.AiWakeWord.disable();
+          openAssistantPanel("fab-click");
         }
-      });
+        return;
+      }
+
+      // Panel Close button click
+      const closeBtn = e.target.closest(".ai-panel-close");
+      if (closeBtn && dynamicRoot.contains(closeBtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAssistantPanel({ source: "close-button" });
+        return;
+      }
+
+      // Standardized microphone action for panel Orb
+      const micBtn = e.target.closest(".ai-assistant-button");
+      if (micBtn && dynamicRoot.contains(micBtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleMicrophoneAction(dynamicRoot);
+        return;
+      }
+
+      // Outside click close listener
+      if (panelOpen) {
+        const clickedInside = dynamicRoot.contains(e.target);
+        if (!clickedInside) {
+          closeAssistantPanel({ source: "outside-click" });
+        }
+      }
+    }, { signal });
+
+    // Keyboard (Escape key) close listener
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && panelOpen) {
+        closeAssistantPanel({ source: "escape" });
+      }
+    }, { signal });
+
+
+
+    // Tab Visibility & Page Lifecycle handlers
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        logWakeEvent("tab hidden -> pause wake recognition");
+        stopWakeRecognition({ reason: "page-hidden", allowRestart: false });
+      } else if (document.visibilityState === "visible") {
+        logWakeEvent("tab visible -> resume wake recognition");
+        if (handsFreeEnabled && microphoneAccessConfirmed && !queryRecognitionActive && !isSpeaking && !isProcessing) {
+          void startWakeRecognitionSafely(root);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange, { signal });
+
+    const handlePageHide = () => {
+      logWakeEvent("pagehide event");
+      stopWakeRecognition({ reason: "pagehide", allowRestart: false });
+    };
+    window.addEventListener("pagehide", handlePageHide, { signal });
+
+    const handlePageShow = (e) => {
+      logWakeEvent("pageshow event", { persisted: e.persisted });
+      if (e.persisted) {
+        reconcileAssistant();
+      }
+    };
+    window.addEventListener("pageshow", handlePageShow, { signal });
+
+    AiWakeWord.init(root);
+
+    return function destroy() {
+      destroyWidget();
+    };
+  }
+
+  function reconcileAssistant() {
+    const root = getCanonicalRoot();
+    const current = window.__AI_SHOPPING_ASSISTANT_INSTANCE__;
+
+    if (!root) {
+      current?.destroy?.();
+      delete window.__AI_SHOPPING_ASSISTANT_INSTANCE__;
+      return;
     }
 
-    wrapper.querySelectorAll(".ai-chip").forEach(chip => {
-      chip.addEventListener("click", () => {
-        const query = chip.getAttribute("data-query");
-        if (query) {
-          _openPanel();
-          _processQuery(query);
-        }
-      });
+    if (current?.root === root && current?.version === VERSION) {
+      return;
+    }
+
+    current?.destroy?.();
+
+    document.querySelectorAll("[data-ai-assistant-root]").forEach(candidate => {
+      const active = candidate === root;
+      candidate.hidden = !active;
+      candidate.inert = !active;
+      candidate.setAttribute("aria-hidden", String(!active));
+      if (!active) {
+        candidate.style.setProperty("display", "none", "important");
+      } else {
+        candidate.style.setProperty("display", "flex", "important");
+      }
     });
 
-    const dot = wrapper.querySelector(".ai-ww-dot");
-    if (dot) dot.className = "ai-ww-dot ai-ww-dot--disabled";
-
-    if (!_SR) {
-      const section = wrapper.querySelector(".ai-ww-section");
-      if (section) {
-        const notice = section.querySelector(".ai-ww-privacy");
-        if (notice) notice.textContent = "Hands-free listening is not supported in this browser. Use the microphone button instead.";
-        const enableBtn = section.querySelector(".ai-ww-enable-btn");
-        if (enableBtn) { enableBtn.disabled = true; }
-      }
-    } else {
-      let isSaved = false;
-      try {
-        isSaved = localStorage.getItem("ai_handsfree") === "1" || sessionStorage.getItem("ai_handsfree") === "1";
-      } catch(e) {}
-
-      if (isSaved) {
-        window.AiWakeWord.enable(wrapper);
-      }
+    if (root.parentNode !== document.body) {
+      document.body.appendChild(root);
     }
-  },
-};
+    root.setAttribute("data-teleported", "");
+    root.style.setProperty("display", "flex", "important");
 
-})(); // end AiWakeWord IIFE
+    window.__AI_SHOPPING_ASSISTANT_INSTANCE__ = {
+      version: VERSION,
+      root,
+      destroy: initializeAssistant(root)
+    };
 
+    // ── Navigation restore: if we navigated here from a product search, re-open
+    // the panel and re-speak the assistant's response on the new page.
+    try {
+      const raw = sessionStorage.getItem("ai_nav_restore");
+      if (raw) {
+        const navState = JSON.parse(raw);
+        // Only restore if navigation happened within the last 10 seconds
+        if (navState && navState.answer && (Date.now() - navState.ts) < 10000) {
+          sessionStorage.removeItem("ai_nav_restore");
+          // Give the page a moment to finish rendering before opening panel
+          setTimeout(async () => {
+            openAssistantPanel("nav-restore");
+            const restoreRoot = getCanonicalRoot();
+            if (!restoreRoot) return;
 
-function attachAllButtons() {
-  document.querySelectorAll(".ai-assistant-button").forEach(initAiAssistantButton);
-  checkPendingSpeakResponse();
-  refreshNativeCart();
-}
+            // Render the saved message into the response box
+            const responseBox = restoreRoot.querySelector(".ai-assistant-response");
+            if (responseBox) {
+              responseBox.innerHTML = "";
+              const textEl = document.createElement("p");
+              textEl.style.margin = "0";
+              textEl.style.lineHeight = "1.5";
+              textEl.innerHTML = navState.answer.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+              responseBox.appendChild(textEl);
 
-// Run immediately (handles cases where script loads after DOM)
-attachAllButtons();
+              // Show the response box if it was hidden
+              responseBox.style.display = "block";
+            }
 
-// Also run on DOMContentLoaded (handles deferred load before DOM ready)
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", attachAllButtons);
-}
-
-// MutationObserver handles Shopify's dynamic section rendering
-const _aiObserver = new MutationObserver((mutations) => {
-  for (const m of mutations) {
-    for (const node of m.addedNodes) {
-      if (node.nodeType !== 1) continue;
-      if (node.classList?.contains("ai-assistant-button")) {
-        initAiAssistantButton(node);
+            // Speak the response ONCE on the destination page (only if navState.speak !== false)
+            const newTurnId = ++activeTurnId;
+            const fakeData = { answer: navState.answer, audio: null };
+            const status = restoreRoot.querySelector(".ai-assistant-status");
+            if (navState.speak !== false) {
+              transitionAssistantState(AssistantState.SPEAKING, restoreRoot);
+              await speakResponseAndWait(fakeData, newTurnId, status, restoreRoot);
+            }
+            if (newTurnId === activeTurnId) {
+              const reqInput = navState.requires_input ?? responseRequiresInput({ answer: navState.answer, stage: navState.stage });
+              await handlePostResponseBehavior(
+                {
+                  answer: navState.answer,
+                  stage: navState.stage,
+                  requires_input: reqInput,
+                  auto_listen: navState.auto_listen ?? reqInput,
+                  conversation_complete: !reqInput,
+                  auto_close: false
+                },
+                newTurnId,
+                restoreRoot
+              );
+            }
+          }, 400);
+        } else if (raw) {
+          // Stale entry — clean up
+          sessionStorage.removeItem("ai_nav_restore");
+        }
       }
-      node.querySelectorAll?.(".ai-assistant-button").forEach(initAiAssistantButton);
+    } catch (e) {
+      // sessionStorage not available or parse error — silently ignore
     }
   }
-});
-_aiObserver.observe(document.body, { childList: true, subtree: true });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", reconcileAssistant, { once: true });
+  } else {
+    reconcileAssistant();
+  }
+
+  document.addEventListener("shopify:section:load", () => queueMicrotask(reconcileAssistant));
+  document.addEventListener("shopify:section:unload", () => {
+    destroyWidget();
+    queueMicrotask(reconcileAssistant);
+  });
+
+  window.AiAssistant = {
+    version: VERSION,
+    openPanel: (wrapper) => {
+      openAssistantPanel("api");
+    },
+    closePanel: (wrapper) => {
+      closeAssistantPanel({ source: "api" });
+    },
+    togglePanel: (wrapper) => {
+      if (panelOpen) {
+        closeAssistantPanel({ source: "api" });
+      } else {
+        openAssistantPanel("api");
+      }
+    },
+    triggerVoice: (wrapper) => {
+      const root = wrapper || getCanonicalRoot();
+      if (root) {
+        unlockAssistantAudio();
+        openAssistantPanel("api-voice");
+        if (window.AiWakeWord) {
+          window.AiWakeWord.toggleDirectQuery(root);
+        }
+      }
+    },
+    getLifecycles: () => ({
+      version: VERSION,
+      panelLifecycleId,
+      activeTurnId,
+      wakeSessionId,
+      panelOpen,
+      panelManuallyClosed,
+      assistantState,
+      handsFreeEnabled,
+      microphoneAccessConfirmed,
+      microphonePermission,
+      microphoneHardError,
+      wakeRecognitionActive,
+      queryRecognitionActive,
+      wakeSequenceRunning
+    }),
+    destroyWidget
+  };
+})();

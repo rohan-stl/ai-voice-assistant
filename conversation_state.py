@@ -1,12 +1,13 @@
 """
 conversation_state.py
 
-In-memory conversation state store, keyed by session_id.
+In-memory and SQLite-backed conversation state store, keyed by session_id.
 Each session tracks the multi-turn shopping flow stage and the user's
 current selections. Sessions expire after IDLE_TTL_SECONDS of inactivity.
 """
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -72,6 +73,7 @@ class ConversationState:
 
     selected_options: dict = field(default_factory=dict)
     selected_options_text: str = ""
+    selection_revision: int = 0
 
     # -------------------------------------------------------
     # Cart quantity multi-operation state
@@ -81,12 +83,66 @@ class ConversationState:
     active_operation_id: Optional[str] = None
 
     # -------------------------------------------------------
+    # Client Cart Action State Machine (v2.1.9)
+    # -------------------------------------------------------
+    pending_cart_action: Optional[dict] = None
+
+    # -------------------------------------------------------
     # Idempotency / dedup
     # -------------------------------------------------------
     processed_request_ids: list = field(default_factory=list)
 
     def touch(self):
         self.last_active = time.time()
+
+    def set_pending_cart_action(
+        self,
+        action: dict = None,
+        action_id: str = None,
+        action_type: str = "add",
+        product_handle: str = "",
+        product_title: str = "",
+        variant_id: str = None,
+        variant_title: str = "",
+        selected_options: dict = None,
+        quantity: int = 1,
+        quantity_mode: str = "set",
+        line_key: str = None,
+    ) -> dict:
+        if isinstance(action, dict):
+            self.pending_cart_action = action
+        else:
+            self.pending_cart_action = {
+                "action_id": action_id or str(uuid.uuid4()),
+                "status": "pending",
+                "conversation_id": self.session_id,
+                "type": action_type,
+                "expected_operation": action_type,
+                "product_handle": product_handle,
+                "product_title": product_title,
+                "variant_id": variant_id,
+                "variant_title": variant_title,
+                "selected_options": selected_options or {},
+                "quantity": quantity,
+                "quantity_mode": quantity_mode,
+                "line_key": line_key,
+                "created_at": time.time(),
+                "completed_at": None,
+            }
+        self.stage = "awaiting_client_cart_action"
+        return self.pending_cart_action
+
+    def get_pending_cart_action(self) -> Optional[dict]:
+        return self.pending_cart_action
+
+    def update_pending_cart_action_status(self, status: str):
+        if self.pending_cart_action:
+            self.pending_cart_action["status"] = status
+            if status in ("succeeded", "failed"):
+                self.pending_cart_action["completed_at"] = time.time()
+
+    def clear_pending_cart_action(self):
+        self.pending_cart_action = None
 
     def reset_selection(self, preserve_collection: bool = False):
         """
@@ -105,6 +161,7 @@ class ConversationState:
         self.pending_cart_intent = None
         self.pending_operations = []
         self.active_operation_id = None
+        self.pending_cart_action = None
         self.is_fetching_more = False
 
         if not preserve_collection:
@@ -114,38 +171,75 @@ class ConversationState:
             self.collection_candidates = []
 
 
-class SessionStore:
-    """Thread-safe in-memory store for ConversationState objects."""
+import sqlite3
+import json
 
-    def __init__(self):
-        self._store: dict[str, ConversationState] = {}
+class SessionStore:
+    """Thread-safe SQLite store for ConversationState objects."""
+
+    def __init__(self, db_path: str = "sessions.sqlite"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    state_json TEXT,
+                    last_active REAL
+                )
+            ''')
+            conn.commit()
 
     def get(self, session_id: str) -> ConversationState:
-        """Return existing state or create a fresh one."""
+        """Return existing state from SQLite or create a fresh one."""
         self._evict_expired()
-        if session_id not in self._store:
-            self._store[session_id] = ConversationState(session_id=session_id)
-        state = self._store[session_id]
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT state_json FROM sessions WHERE session_id = ?", (session_id,))
+            row = cursor.fetchone()
+            
+        if row:
+            try:
+                data = json.loads(row[0])
+                state = ConversationState(**data)
+            except Exception:
+                state = ConversationState(session_id=session_id)
+        else:
+            state = ConversationState(session_id=session_id)
+            
         state.session_id = session_id
         state.touch()
         return state
 
     def save(self, session_id: str, state: ConversationState):
         state.touch()
-        self._store[session_id] = state
+        import dataclasses
+        state_dict = dataclasses.asdict(state)
+        state_json = json.dumps(state_dict)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT INTO sessions (session_id, state_json, last_active)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    state_json=excluded.state_json,
+                    last_active=excluded.last_active
+            ''', (session_id, state_json, state.last_active))
+            conn.commit()
 
     def delete(self, session_id: str):
-        self._store.pop(session_id, None)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            conn.commit()
 
     def _evict_expired(self):
         now = time.time()
-        expired = [
-            sid
-            for sid, state in self._store.items()
-            if now - state.last_active > IDLE_TTL_SECONDS
-        ]
-        for sid in expired:
-            del self._store[sid]
+        cutoff = now - IDLE_TTL_SECONDS
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM sessions WHERE last_active < ?", (cutoff,))
+            conn.commit()
 
 
 # Singleton used by main.py

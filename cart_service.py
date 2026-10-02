@@ -429,171 +429,119 @@ def _serialise_draft(draft: dict, product: dict, variant: dict) -> dict:
 # Public API
 # ────────────────────────────────────────────────────────────
 
-def add_to_draft_order(
+from shopify_auth import ShopContext, get_store_credentials
+from shopify_service import _resolve_shop_credentials
+
+def save_pending_cart_selection(
     session_id: str,
-    shop_domain: str,
-    product: dict,
-    variant: dict,
+    product: dict = None,
+    variant: dict = None,
     quantity: int = 1,
-    admin_token: str = None,
-    client_id: str = None,
-    client_secret: str = None,
 ) -> dict:
     """
-    Add a variant to a session's cart.
-
-    Strategy:
-      1. Try Storefront API cart (requires SHOPIFY_STOREFRONT_TOKEN in .env).
-      2. Fall back to Admin API Draft Orders (requires write_draft_orders scope).
+    Saves a pending product selection into internal session memory.
+    Performs ZERO Shopify API requests (no Storefront or Draft Orders calls).
+    The actual cart mutation is performed natively in the browser via /cart/add.js.
     """
-    domain = shop_domain or _DEFAULT_DOMAIN
-    storefront_token = _DEFAULT_STOREFRONT_TOKEN
-    resolved_admin_token = admin_token or _DEFAULT_ADMIN_TOKEN
+    if not session_id:
+        return {"cart_id": "", "total_quantity": 0, "lines": []}
 
-    # ── Strategy 1: Storefront API ───────────────────────────────────────
-    if storefront_token:
-        try:
-            variant_gid = variant["id"]  # already in gid://shopify/ProductVariant/XXX form
+    existing = _carts.get(session_id, {"cart_id": session_id, "lines": [], "total_quantity": 0, "subtotal": "0.00", "total": "0.00", "currency": "USD"})
+    lines = existing.get("lines", [])
 
-            existing = _carts.get(session_id)
-            if existing and existing.get("cart_id") and str(existing["cart_id"]).startswith("gid://shopify/Cart/"):
-                cart = _storefront_cart_add(domain, storefront_token, existing["cart_id"], variant_gid, quantity)
-            else:
-                cart = _storefront_cart_create(domain, storefront_token, variant_gid, quantity)
+    v_id = variant.get("id") if isinstance(variant, dict) else None
+    v_title = variant.get("title") if isinstance(variant, dict) else ""
+    p_title = product.get("title") if isinstance(product, dict) else ""
+    p_img = (product.get("featuredImage") or {}).get("url") if isinstance(product, dict) else None
+    p_url = product.get("onlineStoreUrl") if isinstance(product, dict) else None
+    price = str(variant.get("price", "0.00")) if isinstance(variant, dict) else "0.00"
 
-            serialised = _serialise_storefront_cart(cart)
-            _carts[session_id] = serialised
-            print(f"[cart] Storefront cart updated — {serialised['total_quantity']} item(s), checkout: {serialised['checkout_url']}")
-            return serialised
+    found = False
+    for line in lines:
+        if line.get("variant_id") == str(v_id):
+            line["quantity"] = line.get("quantity", 0) + quantity
+            line["line_total"] = f"{float(price) * line['quantity']:.2f}"
+            found = True
+            break
 
-        except Exception as exc:
-            print(f"[cart] Storefront API failed: {exc} — trying Draft Orders fallback...")
+    if not found and v_id:
+        lines.append({
+            "line_id": str(v_id),
+            "quantity": quantity,
+            "variant_id": str(v_id),
+            "variant_title": v_title,
+            "product_title": p_title,
+            "product_image": p_img,
+            "product_url": p_url,
+            "price": price,
+            "currency": "USD",
+            "line_total": f"{float(price) * quantity:.2f}",
+        })
 
-    # ── Strategy 2: Admin Draft Orders fallback ──────────────────────────
-    if not resolved_admin_token:
-        raise RuntimeError(
-            "Cannot add to cart: no SHOPIFY_STOREFRONT_TOKEN or SHOPIFY_ADMIN_TOKEN found in .env.\n"
-            "Please add one of these to your .env file:\n"
-            "  SHOPIFY_STOREFRONT_TOKEN=shpat_xxx  (recommended, Storefront API)\n"
-            "  SHOPIFY_ADMIN_TOKEN=shpat_xxx        (Admin API, needs write_draft_orders scope)"
-        )
+    total_qty = sum(l.get("quantity", 1) for l in lines)
+    total_val = sum(float(l.get("price", 0)) * l.get("quantity", 1) for l in lines)
 
-    variant_numeric_id = _gid_to_id(variant["id"])
-    existing = _draft_orders.get(session_id)
-
-    if existing:
-        draft = _add_line_to_draft(domain, resolved_admin_token, existing["draft_id"], variant_numeric_id, quantity)
-    else:
-        draft = _create_draft(domain, resolved_admin_token, variant_numeric_id, quantity)
-
-    serialised = _serialise_draft(draft, product, variant)
-    _draft_orders[session_id] = {"draft_id": draft["id"], **serialised}
-    print(f"[cart] Draft order updated — {serialised['total_quantity']} item(s), checkout: {serialised['checkout_url']}")
-    return serialised
+    updated = {
+        "cart_id": existing.get("cart_id", session_id),
+        "checkout_url": "/cart",
+        "total_quantity": total_qty,
+        "subtotal": f"{total_val:.2f}",
+        "total": f"{total_val:.2f}",
+        "currency": "USD",
+        "lines": lines,
+    }
+    _carts[session_id] = updated
+    return updated
 
 
 def remove_from_cart_by_variant(
     session_id: str,
-    shop_domain: str,
-    variant_id: str,
+    shop_domain: str = None,
+    variant_id: str = None,
+    shop_context: Optional[ShopContext] = None,
     admin_token: str = None,
     new_quantity: Optional[int] = None,
 ) -> dict:
     """
-    Remove or update a line item from a session's cart matching variant_id (or GID).
+    Remove or update a line item from a session's in-memory cart context matching variant_id.
     """
-    domain = shop_domain or _DEFAULT_DOMAIN
-    storefront_token = _DEFAULT_STOREFRONT_TOKEN
-    resolved_admin_token = admin_token or _DEFAULT_ADMIN_TOKEN
+    variant_str = str(variant_id) if variant_id else ""
+    numeric_id = _gid_to_id(variant_str) if "gid://" in variant_str else (int(variant_str) if variant_str.isdigit() else None)
 
-    variant_str = str(variant_id)
-    numeric_id = _gid_to_id(variant_str) if "gid://" in variant_str else int(variant_str)
-
-    # ── Storefront API removal/update ───────────────────────────────────
     existing = _carts.get(session_id)
-    if existing and existing.get("cart_id"):
-        target_line_id = None
-        line_ids_to_remove = []
-        for line in existing.get("lines", []):
-            line_var_id = str(line.get("variant_id", ""))
-            line_num_id = _gid_to_id(line_var_id) if "gid://" in line_var_id else (int(line_var_id) if line_var_id.isdigit() else None)
-            if line_num_id == numeric_id or line_var_id == variant_str:
-                target_line_id = line.get("line_id")
-                line_ids_to_remove.append(target_line_id)
-
-        if storefront_token and str(existing.get("cart_id", "")).startswith("gid://shopify/Cart/"):
-            try:
-                if new_quantity is not None and new_quantity > 0 and target_line_id:
-                    cart = _storefront_cart_update(domain, storefront_token, existing["cart_id"], target_line_id, new_quantity)
-                elif line_ids_to_remove:
-                    cart = _storefront_cart_remove(domain, storefront_token, existing["cart_id"], line_ids_to_remove)
-                else:
-                    return existing
-
-                serialised = _serialise_storefront_cart(cart)
-                _carts[session_id] = serialised
-                return serialised
-            except Exception as exc:
-                print(f"[cart] Storefront remove/update failed: {exc}")
-
-        # Fallback local filter
+    if existing:
         if new_quantity is not None and new_quantity > 0:
             for l in existing.get("lines", []):
-                if _gid_to_id(str(l.get("variant_id","0"))) == numeric_id:
+                l_vid = str(l.get("variant_id", ""))
+                l_nid = _gid_to_id(l_vid) if "gid://" in l_vid else (int(l_vid) if l_vid.isdigit() else None)
+                if l_nid == numeric_id or l_vid == variant_str:
                     l["quantity"] = new_quantity
         else:
             existing["lines"] = [
                 l for l in existing.get("lines", [])
-                if _gid_to_id(str(l.get("variant_id","0"))) != numeric_id
+                if (_gid_to_id(str(l.get("variant_id", ""))) if "gid://" in str(l.get("variant_id","")) else str(l.get("variant_id",""))) != (numeric_id or variant_str)
             ]
         existing["total_quantity"] = sum(l.get("quantity", 1) for l in existing["lines"])
         return existing
 
-    # ── Draft Orders removal ───────────────────────────────────────────
-    draft_info = _draft_orders.get(session_id)
-    if draft_info and draft_info.get("draft_id") and resolved_admin_token:
-        draft_id = draft_info["draft_id"]
-        get_resp = requests.get(
-            _admin_url(domain, f"draft_orders/{draft_id}.json"),
-            headers=_admin_headers(resolved_admin_token),
-            timeout=15,
-        )
-        if get_resp.ok:
-            existing_lines = get_resp.json()["draft_order"].get("line_items", [])
-            clean_lines = [
-                {"variant_id": l["variant_id"], "quantity": l["quantity"]}
-                for l in existing_lines if l.get("variant_id") != numeric_id
-            ]
-            put_resp = requests.put(
-                _admin_url(domain, f"draft_orders/{draft_id}.json"),
-                json={"draft_order": {"line_items": clean_lines}},
-                headers=_admin_headers(resolved_admin_token),
-                timeout=20,
-            )
-            if put_resp.ok:
-                draft = put_resp.json()["draft_order"]
-                lines = draft_info.get("lines", [])
-                dummy_prod = {"title": "Product"}
-                dummy_var = {"price": "0.00"}
-                serialised = _serialise_draft(draft, dummy_prod, dummy_var)
-                _draft_orders[session_id] = {"draft_id": draft["id"], **serialised}
-                return serialised
-
     return {"cart_id": "", "total_quantity": 0, "lines": []}
 
 
-def get_draft_order(session_id: str) -> dict | None:
-    """Return the current cart for a session (or None)."""
-    if session_id in _carts:
-        return _carts[session_id]
-    d = _draft_orders.get(session_id)
-    return {k: v for k, v in d.items() if k != "draft_id"} if d else None
+def get_session_cart_context(session_id: str) -> dict | None:
+    """Return the cached cart context for a session (or None)."""
+    return _carts.get(session_id)
 
 
-def clear_draft_order(session_id: str):
-    """Remove cart state for a session (e.g. on reset)."""
+def clear_session_cart_context(session_id: str):
+    """Remove session cart state (e.g. on reset)."""
     _carts.pop(session_id, None)
     _draft_orders.pop(session_id, None)
+
+
+# Aliases for backward compatibility
+get_draft_order = get_session_cart_context
+clear_draft_order = clear_session_cart_context
+add_to_draft_order = save_pending_cart_selection
 
 
 def sync_native_cart(session_id: str, cart_context: dict | None):

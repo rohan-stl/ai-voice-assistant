@@ -12,8 +12,47 @@ import time
 from openai import OpenAI, RateLimitError
 from dotenv import load_dotenv
 import logger as log
+from models import CartIntentModel, BrowseIntentModel
 
 load_dotenv()
+
+
+def _coerce_llm_filters(raw: dict) -> dict:
+    """
+    Coerce and validate the raw LLM filters dict before use.
+
+    Handles:
+    - Price as string ("$50", "50 USD", "fifty") → float or None
+    - Null-like strings ("null", "none", "") → None
+    - Whitespace stripping on all string fields
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    out = {}
+    _NULL_STRINGS = {"", "null", "none", "n/a", "na", "nil", "undefined"}
+
+    for key in ("product_name", "product_type", "color", "size", "vendor", "collection_name"):
+        val = raw.get(key)
+        if val is None or (isinstance(val, str) and val.strip().lower() in _NULL_STRINGS):
+            out[key] = None
+        else:
+            out[key] = str(val).strip()
+
+    for key in ("min_price", "max_price"):
+        val = raw.get(key)
+        if val is None or (isinstance(val, str) and val.strip().lower() in _NULL_STRINGS):
+            out[key] = None
+        else:
+            try:
+                # Strip currency symbols, spaces, and commas before parsing
+                clean = re.sub(r"[^\d.]", "", str(val))
+                out[key] = float(clean) if clean else None
+            except (ValueError, TypeError):
+                out[key] = None
+
+    return out
+
 
 client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -145,9 +184,42 @@ def _sanitize_answer(data: dict, fallback: dict) -> dict:
     return data
 
 
-def _build_product_text(products: list) -> str:
+def _build_product_text(products: list, query: str = "") -> str:
+    """
+    Build a compact product catalogue string for the LLM prompt.
+
+    When a query string is supplied, products are scored by token overlap
+    against the query and the top 10 most relevant are sent, not just the
+    first 15 in catalogue order. This prevents the target product from being
+    invisible to the LLM when the store has many products.
+
+    Each product line includes the handle (stable Shopify ID) so the LLM
+    can return it as product_ref for a lossless round-trip match.
+    """
+    if not isinstance(products, list):
+        products = []
+
+    if query:
+        q_words = set(re.split(r'\W+', query.lower())) - {
+            "a", "an", "the", "i", "me", "my", "want", "need", "show",
+            "find", "get", "some", "any", "please", "can", "you", "give",
+            "looking", "for", "have", "do", "is", "are", "in", "of", "and"
+        }
+        q_words.discard("")
+        scored = []
+        for p in products:
+            title_words = set(re.split(r'\W+', p.get("title", "").lower()))
+            type_words  = set(re.split(r'\W+', p.get("productType", "").lower()))
+            desc_words  = set(re.split(r'\W+', (p.get("description") or "").lower()))
+            score = len(q_words & (title_words | type_words | desc_words))
+            scored.append((score, p))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        candidates = [p for _, p in scored[:10]]
+    else:
+        candidates = products[:10]
+
     lines = []
-    for product in products[:15]:
+    for product in candidates:
         variants = product.get("variants", {}).get("nodes", [])
         v_summaries = []
         for v in variants[:5]:
@@ -155,14 +227,15 @@ def _build_product_text(products: list) -> str:
             opt_str = "/".join(o['value'] for o in opts) if opts else v.get("title", "")
             v_summaries.append(f"{opt_str} (${v.get('price', '0')})")
         lines.append(
-            f"• {product.get('title', '')} [{product.get('productType', '')}] - Vars: {', '.join(v_summaries)}"
+            f"• [{product.get('handle', '')}] {product.get('title', '')} "
+            f"[{product.get('productType', '')}] - Vars: {', '.join(v_summaries)}"
         )
     return "\n".join(lines)
 
 
 def ask_llm(message: str, products: list) -> dict:
     """Extract intent, collection references, and product filters from a browse query."""
-    product_text = _build_product_text(products)
+    product_text = _build_product_text(products, query=message)
 
     prompt = f"""
 You are an AI shopping assistant for a Shopify store.
@@ -196,7 +269,8 @@ Rules:
 3. "search_products_in_collection" when user mentions a specific collection (e.g. "Summer Collection", "Men's Collection", "Sale Collection").
 4. "collection_name" should be the exact collection phrase mentioned (e.g. "Summer Collection", "Sale", "Men's").
 5. Keep "answer" extremely short (1 sentence, max 10-12 words).
-6. Return ONLY JSON. No markdown code fences.
+6. CRITICAL: If the user asks for a specific material, style, or type of item (e.g., "linen", "leather", "snowboard"), YOU MUST place that descriptive keyword in "product_name". Do not leave "product_name" null if they gave a descriptive word.
+7. Return ONLY JSON. No markdown code fences.
 """
     try:
         response = _call_llm_with_retry(prompt)
@@ -211,7 +285,19 @@ Rules:
     if not content:
         return FALLBACK_RESPONSE
 
-    return _parse_json(content, FALLBACK_RESPONSE)
+    result = _parse_json(content, FALLBACK_RESPONSE)
+    try:
+        validated = BrowseIntentModel(**result)
+        result = validated.model_dump()
+    except Exception as e:
+        log.log_warn("ask_llm_validation", f"Pydantic validation failed: {str(e)}")
+        allowed_intents = ["search_products_in_collection", "list_collections", "clear_collection_filter", "filter_products", "general_question"]
+        if result.get("intent") not in allowed_intents:
+            result["intent"] = "general_question"
+        if not isinstance(result.get("filters"), dict):
+            result["filters"] = {}
+            
+    return result
 
 
 def ask_llm_cart(
@@ -219,7 +305,7 @@ def ask_llm_cart(
     filtered_products: list,
     selected_product: dict = None,
 ) -> dict:
-    product_text = _build_product_text(filtered_products)
+    product_text = _build_product_text(filtered_products, query=message)
 
     selected_context = ""
     if selected_product:
@@ -241,7 +327,7 @@ Determine what the customer wants. Return ONLY valid JSON:
 
 {{
   "intent": "<intent>",
-  "product_ref": "<product title or null>",
+  "product_ref": "<product handle (the [bracketed] identifier) or null>",
   "variant_ref": "<size/color/sku or null>",
   "quantity": <integer, default 1>,
   "go_to_checkout": <true if customer wants to go to checkout, false otherwise>,
@@ -259,6 +345,7 @@ Intent values:
 - "general_question"
 
 Rules:
+- "product_ref" MUST be the product's handle (the bracketed identifier shown before the title, e.g. "classic-tee"). Do NOT use the product title.
 - Keep "answer" extremely short (1 sentence, max 10-12 words).
 - Return ONLY JSON. No markdown code fences.
 """
@@ -276,9 +363,28 @@ Rules:
         return FALLBACK_CART_RESPONSE
 
     result = _parse_json(content, FALLBACK_CART_RESPONSE)
+    
     try:
-        result["quantity"] = max(1, int(result.get("quantity", 1)))
-    except (TypeError, ValueError):
-        result["quantity"] = 1
+        validated = CartIntentModel(**result)
+        result = validated.model_dump()
+    except Exception as e:
+        log.log_warn("ask_llm_cart_validation", f"Pydantic validation failed: {str(e)}")
+        try:
+            result["quantity"] = max(1, int(result.get("quantity", 1)))
+        except (TypeError, ValueError):
+            result["quantity"] = 1
+        allowed_intents = ["select_variant", "add_to_cart", "remove_from_cart", "checkout", "confirm_yes", "confirm_no", "filter_products", "general_question"]
+        if result.get("intent") not in allowed_intents:
+            result["intent"] = "general_question"
+        result["go_to_checkout"] = bool(result.get("go_to_checkout"))
+
+    # Normalise string refs — convert null-like values to None
+    _null = {"", "null", "none", "n/a"}
+    result["product_ref"] = str(result.get("product_ref") or "").strip().lower() or None
+    if result["product_ref"] in _null:
+        result["product_ref"] = None
+    result["variant_ref"] = str(result.get("variant_ref") or "").strip() or None
+    if result["variant_ref"] and result["variant_ref"].lower() in _null:
+        result["variant_ref"] = None
 
     return result

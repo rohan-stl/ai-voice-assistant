@@ -1,0 +1,27 @@
+<script src="{{ 'ai-assistant.js' | asset_url }}?v={{ 'now' | date: '%s' }}" defer="defer"></script>
+{% assign wake_sound_url = 'wake-chime.js' | asset_url %}
+{% assign effective_block_id = block.id | default: 'embed' %}
+{% render 'ai_assistant_widget',
+  api_base_url: block.settings.api_base_url,
+  wake_sound_url: wake_sound_url,
+  block_id: effective_block_id,
+  installation_type: 'app-embed',
+  widget_version: '2.1.10'
+%}
+
+{% schema %}
+{
+  "name": "Voice Assistant",
+  "target": "body",
+  "stylesheet": "ai-assistant.css",
+  "settings": [
+    {
+      "type": "text",
+      "id": "api_base_url",
+      "label": "AI Backend API Base URL",
+      "default": "/apps/ai-assistant",
+      "info": "App Proxy path or backend endpoint"
+    }
+  ]
+}
+{% endschema %}

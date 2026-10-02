@@ -35,7 +35,17 @@ def _clean_product_names(product_names: list, product_types: list) -> list:
 def build_storefront_url(filters: dict = None, collection_handle: str = None) -> str:
     """
     Build relative storefront URL for a collection or search page.
-    Always returns relative path (e.g. /collections/summer-collection?filter.p.product_type=T-Shirt).
+    Always returns relative path.
+
+    Strategy:
+    - collection_handle supplied → /collections/<handle>?filter.*  (native collection page)
+    - product_name only          → /search?q=<name>&type=product
+    - product_type only          → /search?q=<type>&type=product
+      (avoids broken filter.p.product_type= URLs when Shopify's native storefront
+       filtering is not enabled or the productType field is blank/mismatched in
+       Shopify Admin — the search endpoint works by title/description regardless)
+    - product_type + color/size  → /search?q=<type>&type=product + filter params
+    - Both product_name AND type → /search with combined query terms
     """
     filters = filters or {}
     params = {}
@@ -50,35 +60,63 @@ def build_storefront_url(filters: dict = None, collection_handle: str = None) ->
     min_price = filters.get("min_price")
 
     if collection_handle:
+        # ── Collection page: keep native filter params (theme must support them)
         base_path = f"/collections/{collection_handle}"
-        use_search = False
+
+        if product_types:
+            params["filter.p.product_type"] = product_types
+
+        if colors:
+            params["filter.v.option.color"] = [c.title() for c in colors]
+
+        if sizes:
+            params["filter.v.option.size"] = [s.upper() for s in sizes]
+
+        if vendors:
+            params["filter.p.vendor"] = vendors
+
+        if min_price is not None:
+            params["filter.v.price.gte"] = min_price
+        elif max_price is not None:
+            params["filter.v.price.gte"] = 0
+
+        if max_price is not None:
+            params["filter.v.price.lte"] = max_price
+
     else:
-        use_search = bool(product_names)
-        base_path = "/search" if use_search else "/collections/all"
+        # ── No specific collection: always use /search so results show regardless
+        # of whether Shopify native filtering is configured on the theme.
+        base_path = "/search"
 
-    if use_search and product_names:
-        params["q"] = " ".join(product_names)
-        params["type"] = "product"
+        # Build query string: combine type keywords + product names
+        query_terms = []
+        if product_types:
+            query_terms.extend(product_types)
+        if product_names:
+            query_terms.extend(product_names)
 
-    if product_types:
-        params["filter.p.product_type"] = product_types
+        if query_terms:
+            params["q"] = " ".join(query_terms)
+            params["type"] = "product"
+        elif vendors:
+            # vendor-only: search by vendor name
+            params["q"] = " ".join(vendors)
+            params["type"] = "product"
 
-    if colors:
-        params["filter.v.option.color"] = [c.title() for c in colors]
+        # Add option filters where theme search supports them
+        if colors:
+            params["filter.v.option.color"] = [c.title() for c in colors]
 
-    if sizes:
-        params["filter.v.option.size"] = [s.upper() for s in sizes]
+        if sizes:
+            params["filter.v.option.size"] = [s.upper() for s in sizes]
 
-    if vendors:
-        params["filter.p.vendor"] = vendors
+        if min_price is not None:
+            params["filter.v.price.gte"] = min_price
+        elif max_price is not None:
+            params["filter.v.price.gte"] = 0
 
-    if min_price is not None:
-        params["filter.v.price.gte"] = min_price
-    elif max_price is not None:
-        params["filter.v.price.gte"] = 0
-
-    if max_price is not None:
-        params["filter.v.price.lte"] = max_price
+        if max_price is not None:
+            params["filter.v.price.lte"] = max_price
 
     if not params:
         return base_path

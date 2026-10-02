@@ -411,6 +411,47 @@
 
     /* Markdown bold rendering in bubble */
     .msg-bubble b, .msg-bubble strong { font-weight: 700; color: white; }
+
+    /* ─── Voice Modal Overlay ───────────────────────────────────── */
+    .voice-modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(10, 11, 20, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .voice-modal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 30px 24px;
+      width: 90%; max-width: 360px;
+      text-align: center; position: relative;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    .voice-modal-orb {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--red), #e84393);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px;
+      box-shadow: 0 0 30px rgba(255,107,107,0.5);
+      animation: pulseOrb 1.4s ease-in-out infinite;
+    }
+    @keyframes pulseOrb {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 25px rgba(255,107,107,0.4); }
+      50% { transform: scale(1.08); box-shadow: 0 0 45px rgba(255,107,107,0.7); }
+    }
+    .voice-modal-title { font-size: 18px; font-weight: 700; color: #fff; }
+    .voice-modal-transcript { font-size: 14px; color: var(--muted); min-height: 40px; }
+    .voice-modal-close {
+      position: absolute; top: 12px; right: 14px;
+      background: transparent; border: none; color: var(--muted);
+      font-size: 18px; cursor: pointer; padding: 4px 8px;
+    }
+    .voice-modal-close:hover { color: #fff; }
   </style>
 </head>
 <body>
@@ -474,6 +515,17 @@
     </div>
   </div>
 
+</div>
+
+<!-- ── Voice Listening Overlay Modal ───────────────────────── -->
+<div class="voice-modal-overlay" id="voiceModal" style="display:none;">
+  <div class="voice-modal-card">
+    <button class="voice-modal-close" id="closeVoiceModalBtn">✕</button>
+    <div class="voice-modal-orb">🎙️</div>
+    <div class="voice-modal-title">Listening…</div>
+    <div class="voice-modal-transcript" id="voiceModalTranscript">Speak now, e.g. &ldquo;Show me T-shirts under $50&rdquo;</div>
+    <button class="btn btn-cancel" id="cancelVoiceBtn" style="margin-top:8px;">Stop Listening</button>
+  </div>
 </div>
 
 <script>
@@ -801,7 +853,9 @@ function processResponse(data, userMessage) {
     playBase64Audio(data.audio);
   } else {
     // Browser Web Speech Synthesis fallback — works in Chrome, Safari, Edge
-    speakText(data.answer || "");
+  // Close voice listening modal if server signals close_widget or auto_close
+  if (data.close_widget || data.auto_close || data.immediate_close) {
+    if (isListening) stopListening();
   }
 }
 
@@ -885,10 +939,14 @@ function buildRecognition() {
 
   r.onerror = (event) => {
     stopListening();
+    console.error("[SpeechRecognition] error:", event.error);
     if (event.error === "no-speech") {
       setStatus("🔇 No speech detected — tap 🎤 and speak clearly");
-    } else if (event.error === "not-allowed") {
+    } else if (event.error === "not-allowed" || event.error === "service-not-allowed") {
       setStatus("🚫 Microphone blocked — allow mic in browser settings");
+      showMicError("Microphone access was denied.\n\nTo fix this:\n1. Click the 🔒 lock icon in your browser's address bar\n2. Set Microphone to \"Allow\"\n3. Reload the page");
+    } else if (event.error === "network") {
+      setStatus("⚠️ Network error with voice service — please type instead");
     } else {
       setStatus(`⚠️ Voice error: ${event.error} — please type instead`);
     }
@@ -901,8 +959,32 @@ function buildRecognition() {
   return r;
 }
 
-function startListening() {
-  if (isProcessing) return;
+const $voiceModal = document.getElementById("voiceModal");
+const $voiceModalTranscript = document.getElementById("voiceModalTranscript");
+const $closeVoiceModalBtn = document.getElementById("closeVoiceModalBtn");
+const $cancelVoiceBtn = document.getElementById("cancelVoiceBtn");
+
+if ($closeVoiceModalBtn) $closeVoiceModalBtn.onclick = () => stopListening();
+if ($cancelVoiceBtn) $cancelVoiceBtn.onclick = () => stopListening();
+
+async function startListening() {
+  if (isProcessing) {
+    setStatus("⏳ Please wait — still processing previous request");
+    return;
+  }
+
+  // First check if mic permission is granted / promptable
+  if (navigator.permissions) {
+    try {
+      const perm = await navigator.permissions.query({ name: "microphone" });
+      if (perm.state === "denied") {
+        setStatus("🚫 Microphone blocked — allow mic in browser settings and reload");
+        showMicError("Microphone access is blocked. Please click the 🔒 icon in your browser's address bar, allow the microphone, then reload the page.");
+        return;
+      }
+    } catch (_) { /* permissions API not available — proceed anyway */ }
+  }
+
   recognition = buildRecognition();
 
   if (recognition) {
@@ -910,15 +992,25 @@ function startListening() {
     isListening = true;
     $micBtn.classList.add("recording");
     $micBtn.textContent = "⏹";
+    if ($voiceModal) {
+      $voiceModal.style.display = "flex";
+      if ($voiceModalTranscript) $voiceModalTranscript.textContent = "Speak now, e.g. \"Show me T-shirts under $50\"";
+    }
     setStatus("🔴 Listening… speak now, tap ⏹ to cancel");
     try {
       recognition.start();
     } catch (e) {
       stopListening();
-      setStatus("⚠️ Could not start microphone");
+      setStatus("⚠️ Could not start microphone — " + (e.message || "unknown error"));
+      console.error("[Mic] recognition.start() failed:", e);
     }
   } else {
     // Fallback: MediaRecorder → server STT
+    if ($voiceModal) {
+      $voiceModal.style.display = "flex";
+      if ($voiceModalTranscript) $voiceModalTranscript.textContent = "Recording audio… speak now";
+    }
+    setStatus("🎙️ Starting microphone (fallback mode)…");
     startMediaRecorder();
   }
 }
@@ -927,6 +1019,7 @@ function stopListening() {
   isListening = false;
   $micBtn.classList.remove("recording");
   $micBtn.textContent = "🎤";
+  if ($voiceModal) $voiceModal.style.display = "none";
   if (recognition) {
     try { recognition.stop(); } catch (e) {}
     recognition = null;
@@ -1028,8 +1121,10 @@ async function startMediaRecorder() {
     $micBtn.classList.add("recording");
     $micBtn.textContent = "⏹";
     setStatus("🔴 Recording… tap ⏹ to stop");
-  } catch {
+  } catch (err) {
+    console.error("[MediaRecorder] getUserMedia failed:", err);
     setStatus("🚫 Microphone access denied — check browser permissions");
+    showMicError("Could not access your microphone.\n\nError: " + (err.message || err) + "\n\nTo fix this:\n1. Click the 🔒 lock icon in your address bar\n2. Set Microphone to \"Allow\"\n3. Reload the page");
   }
 }
 
@@ -1076,7 +1171,19 @@ function playBase64Audio(b64) {
     const blob = new Blob([bytes], { type: "audio/mpeg" });
     const url = URL.createObjectURL(blob);
     currentAudio = new Audio(url);
+    currentAudio.volume = 1.0;  // Max system volume
     currentAudio.onended = () => URL.revokeObjectURL(url);
+
+    // Use Web Audio API GainNode to amplify beyond default if needed
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaElementSource(currentAudio);
+      const gain = ctx.createGain();
+      gain.gain.value = 1.5;  // 1.5× amplification — increase further if still too quiet
+      source.connect(gain);
+      gain.connect(ctx.destination);
+    } catch (_) { /* fallback: plays at system volume without gain */ }
+
     currentAudio.play().catch(() => {});
   } catch {}
 }
@@ -1131,9 +1238,9 @@ function speakText(text) {
   const speak = () => {
     const utter = new SpeechSynthesisUtterance(clean);
     utter.lang = "en-US";
-    utter.rate = 1.0;
+    utter.rate = 0.95;    // Slightly slower = clearer & perceived as louder
     utter.pitch = 1.0;
-    utter.volume = 1.0;
+    utter.volume = 1.0;   // Maximum browser TTS volume
 
     const voices = window.speechSynthesis.getVoices();
     const preferred = voices.find(v =>
@@ -1205,8 +1312,28 @@ appendWelcome();
 // Show a friendly note if browser doesn't support Web Speech API
 if (!SpeechRecognition) {
   setStatus("ℹ️ Voice not supported in this browser — please type your request");
+  $micBtn.title = "Voice input not supported in this browser — use Chrome, Edge or Safari";
+  $micBtn.style.opacity = "0.5";
 } else {
   setStatus(`Ready — tap 🎤 to speak or type below`);
+}
+
+// ── Mic permission helper ──────────────────────────────────────
+function showMicError(msg) {
+  // Show in status bar
+  setStatus("🚫 " + msg.split("\n")[0]);
+  // Also show a non-blocking toast in the chat
+  const div = document.createElement("div");
+  div.className = "msg ai";
+  div.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-bubble" style="background:rgba(255,107,107,0.12);border-color:rgba(255,107,107,0.3);">
+      <strong style="color:#ff6b6b;">🚫 Microphone Access Issue</strong><br/><br/>
+      ${escapeHtml(msg).replace(/\n/g, "<br/>")}
+    </div>
+  `;
+  $messages.appendChild(div);
+  $messages.scrollTop = $messages.scrollHeight;
 }
 </script>
 </body>
