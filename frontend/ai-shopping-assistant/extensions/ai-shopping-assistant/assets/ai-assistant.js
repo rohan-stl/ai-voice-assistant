@@ -590,9 +590,17 @@
     }
 
     if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
-      const wakeStarted = await startWakeRecognitionSafely(root || document);
-      if (!wakeStarted && shouldRestartWakeRecognition()) {
-        scheduleWakeRecognitionRestart(wakeSessionId, root || document);
+      // v2.1.5-fix: Reset allowRestart flag that may have been locked by a prior
+      // stopWakeRecognition({ allowRestart: false }) call during the active conversation.
+      // Also give the browser's SpeechRecognition engine a brief settle window (350ms)
+      // so its onend callback fires cleanly before we try to restart wake listening.
+      wakeRestartAllowed = true;
+      await delay(350);
+      if (!destroyed && handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+        const wakeStarted = await startWakeRecognitionSafely(root || document);
+        if (!wakeStarted && shouldRestartWakeRecognition()) {
+          scheduleWakeRecognitionRestart(wakeSessionId, root || document);
+        }
       }
     } else {
       transitionAssistantState(AssistantState.IDLE, root || document);
@@ -1140,6 +1148,7 @@
     if (panelManuallyClosed) {
       logWakeEvent("returned to wake-ready after turn (panel manually closed)");
       if (handsFreeEnabled && microphoneAccessConfirmed && !microphoneHardError) {
+        wakeRestartAllowed = true;  // v2.1.5-fix: unlock restart after conversation end
         startWakeRecognitionSafely(rootNode);
       }
       return;
