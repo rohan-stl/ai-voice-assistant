@@ -86,6 +86,8 @@ pgdata/
 
 # SQLite, if used for local testing
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
 *.db
 

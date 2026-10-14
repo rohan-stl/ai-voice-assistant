@@ -75,11 +75,23 @@ _DEFAULT_ADMIN_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN", "")
 
 app = FastAPI(title="AI Shopping Assistant")
 
+# CORS: only storefront / admin origins may call the API from a browser.
+#   ALLOWED_ORIGINS  comma-separated extra origins (e.g. a custom storefront domain)
+#   APP_ENV          set to "production" to disable the localhost dev origins
+_extra_origins = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _DEFAULT_DOMAIN:
+    _extra_origins.append(f"https://{_DEFAULT_DOMAIN.strip().lower()}")
+
+_origin_regex = r"https://[a-z0-9][a-z0-9-]*\.myshopify\.com|https://admin\.shopify\.com"
+if os.getenv("APP_ENV", "development").lower() != "production":
+    _origin_regex += r"|http://(localhost|127\.0\.0\.1)(:\d+)?"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_extra_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 

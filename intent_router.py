@@ -188,6 +188,18 @@ def _options_only_text(product: dict) -> str:
     """Option summary without its leading "Found **title**." sentence, for embedding in other replies."""
     return re.sub(r'^Found \*\*.*?\*\*\.\s*', '', _available_variants_text(product))
 
+# Cart-management commands that must never be treated as variant/option answers.
+_CART_MGMT_ESCAPE_RE = re.compile(
+    r'\b(empty|clear|remove|delete|take out|get rid of|drop)\b'
+    r'|\b(what\'?s|what is|show|view|check)\b.*\b(cart|basket|bag)\b'
+    r'|\b(go to|proceed to|take me to|open)\s+(the\s+)?checkout\b'
+    r'|^\s*(checkout|check out|pay now)\s*[.!?]*\s*$'
+)
+_ADD_WORDS_RE = re.compile(r'\b(add|select|buy|pick|put|place)\b')
+
+def _is_cart_management_command(msg_lower: str) -> bool:
+    return bool(_CART_MGMT_ESCAPE_RE.search(msg_lower)) and not _ADD_WORDS_RE.search(msg_lower)
+
 def _mentions_other_product(message: str, current: dict, all_products: list) -> bool:
     """
     True when the message uses a product/type word that belongs to a different product
@@ -1195,6 +1207,16 @@ def route_message(message: str, state: ConversationState, all_products: list, se
         'what do you have', 'find', 'search', 'list', 'browse', 'look for',
         'looking for', 'do you have', 'alternative', 'similar',
     )
+    # Cart commands (clear / remove / view cart / checkout) are handled further down in
+    # this function; do not let the variant-selection block below swallow them.
+    if (
+        state.stage.startswith('awaiting_')
+        and state.stage not in ('awaiting_cart_confirm', 'awaiting_cart_quantity', 'awaiting_client_cart_action')
+        and state.selected_product
+        and _is_cart_management_command(msg_lower)
+    ):
+        state.reset_selection()
+        state.stage = 'browse'
     if (
         state.stage.startswith('awaiting_')
         and state.selected_product
