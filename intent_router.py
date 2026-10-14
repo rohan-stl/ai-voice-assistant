@@ -184,6 +184,63 @@ def _build_precise_product_url(normalized_filters: dict, filtered_products: list
             return f'/search?{urlencode(params)}'
     return build_storefront_url(normalized_filters)
 
+def _options_only_text(product: dict) -> str:
+    """Option summary without its leading "Found **title**." sentence, for embedding in other replies."""
+    return re.sub(r'^Found \*\*.*?\*\*\.\s*', '', _available_variants_text(product))
+
+def _mentions_other_product(message: str, current: dict, all_products: list) -> bool:
+    """
+    True when the message uses a product/type word that belongs to a different product
+    than the current selection ("I want a black T-shirt" while Track Pants is selected).
+    Option values (colors, sizes) and words that also describe the current product are ignored.
+    """
+    def _tokens(text: str) -> set:
+        return {w.rstrip('s') for w in re.split(r'\W+', (text or '').lower()) if len(w) >= 3}
+
+    current_tokens = _tokens(current.get('title')) | _tokens(current.get('productType') or current.get('product_type'))
+    option_tokens: set = set()
+    other_tokens: set = set()
+    for p in all_products:
+        for opt in p.get('options', []):
+            for val in opt.get('values', []):
+                option_tokens |= _tokens(str(val))
+        if p.get('id') != current.get('id'):
+            other_tokens |= _tokens(p.get('title')) | _tokens(p.get('productType') or p.get('product_type'))
+    return any(
+        len(w) >= 3 and w in other_tokens and w not in current_tokens and w not in option_tokens
+        for w in _tokens(message)
+    )
+
+def _is_product_sold_out(product: Optional[dict]) -> bool:
+    variants = (product or {}).get('variants', {}).get('nodes', [])
+    return bool(variants) and not any(_is_variant_in_stock(v) for v in variants)
+
+def _handle_sold_out_product(product: dict, state: ConversationState, all_products: list) -> tuple[str, list, Optional[str]]:
+    """
+    A fully sold-out product can never complete variant selection, so do not keep
+    the session in an awaiting_* stage. Drop the selection, suggest in-stock
+    products of the same type, and return to browse so the next message searches fresh.
+    Returns (answer, shown_products, storefront_url).
+    """
+    title = product.get('title', 'That product')
+    ptype = (product.get('productType') or product.get('product_type') or '').strip().lower()
+    similar = [
+        p for p in all_products
+        if p.get('id') != product.get('id')
+        and not _is_product_sold_out(p)
+        and ptype
+        and (p.get('productType') or p.get('product_type') or '').strip().lower() == ptype
+    ]
+    state.reset_selection()
+    state.stage = 'browse'
+    if similar:
+        state.filtered_products = similar
+        names = ', '.join(f"{p.get('title', '')} (${float(p.get('variants', {}).get('nodes', [{}])[0].get('price') or 0):.2f})" for p in similar[:3])
+        answer = f"Sorry, {title} is currently sold out. You might like: {names}. Which would you like?"
+        return (answer, similar, _build_precise_product_url({}, similar))
+    answer = f"Sorry, {title} is currently sold out. Would you like to see something else?"
+    return (answer, all_products, None)
+
 def _handle_browse(message: str, state: ConversationState, all_products: list, shop_domain: str) -> tuple[str, list, Optional[str], bool]:
     """
     Browse stage: run LLM to extract filters, filter products, return results.
@@ -211,6 +268,9 @@ def _handle_browse(message: str, state: ConversationState, all_products: list, s
             state.stage = 'awaiting_product_clarification'
             answer = f"{answer} I couldn't find any products matching your request. Could you clarify what you're looking for?".strip()
             return (answer, filtered, storefront_url, True)
+        elif len(filtered) == 1 and _is_product_sold_out(filtered[0]):
+            answer, filtered, storefront_url = _handle_sold_out_product(filtered[0], state, all_products)
+            return (answer, filtered, storefront_url, False)
         elif len(filtered) == 1:
             state.selected_product = filtered[0]
             state.stage = 'awaiting_variant'
@@ -226,10 +286,10 @@ def _handle_browse(message: str, state: ConversationState, all_products: list, s
                     answer = f"Got it! Just to confirm: **{filtered[0]['title']}** — {fast_variant.get('title')} at ${price:.2f}. Shall I add this to your cart?"
                 else:
                     available = _available_variants_text(filtered[0])
-                    answer = f"Found **{filtered[0]['title']}**. Options: {available}. Which would you like?"
+                    answer = available
             else:
                 available = _available_variants_text(filtered[0])
-                answer = f"Found **{filtered[0]['title']}**. Options: {available}. Which would you like?"
+                answer = available
         else:
             state.stage = 'awaiting_variant'
             answer = _format_product_search_summary(filtered)
@@ -321,8 +381,8 @@ def _handle_awaiting_variant(message: str, state: ConversationState, all_product
     if not variant or not _is_variant_in_stock(variant):
         state.stage = 'awaiting_variant'
         opts_fmt = ', '.join((f'{v}' for k, v in state.selected_options.items()))
-        available_summary = _get_product_options_summary(product)
-        answer = f"Sorry, **{product['title']}** in {opts_fmt} is currently out of stock. Available options: {available_summary}."
+        available_summary = _options_only_text(product)
+        answer = f"Sorry, **{product['title']}** in {opts_fmt} is currently out of stock. {available_summary}"
         return (answer, state.filtered_products or all_products, None, False, None, False, None, False, None, None, None)
     state.selected_variant = variant
     state.quantity = quantity
@@ -379,9 +439,9 @@ def _handle_awaiting_confirm(message: str, state: ConversationState, all_product
             state.stage = 'browse'
             return ('Something went wrong with my memory of your selection. Could you start over?', all_products, None, False, None, False)
         if not _is_variant_in_stock(variant):
-            available = _available_variants_text(product)
+            available = _options_only_text(product)
             state.stage = 'awaiting_variant'
-            return (f"Sorry, **{variant.get('title')}** is currently out of stock for **{product['title']}**. Available options: {available}.", state.filtered_products or all_products, None, False, None, False)
+            return (f"Sorry, **{variant.get('title')}** is currently out of stock for **{product['title']}**. {available}", state.filtered_products or all_products, None, False, None, False)
         try:
             quantity = state.quantity
             extracted_qty = extract_quantity(message)
@@ -929,7 +989,7 @@ def route_message(message: str, state: ConversationState, all_products: list, se
         or any(ct in msg_lower for ct in _catalog_tokens)
     )
     is_pure_cancel = msg_stripped in PURE_CANCEL_EXACT or (any((msg_lower.startswith(p) for p in ('cancel', 'stop', 'never mind', 'nevermind', "i don't want anything", 'i dont want anything', "don't add", 'dont add'))) and (not has_replacement_info))
-    if msg_stripped.startswith('no') and (not has_replacement_info):
+    if re.match(r'no\b', msg_stripped) and (not has_replacement_info):
         is_pure_cancel = True
     if is_pure_cancel:
         state.reset_selection()
@@ -1002,8 +1062,8 @@ def route_message(message: str, state: ConversationState, all_products: list, se
         variant = state.selected_variant
         if product and variant:
             if not _is_variant_in_stock(variant):
-                opts_summary = _get_product_options_summary(product)
-                answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{product['title']}**. Available options: {opts_summary}."
+                opts_summary = _options_only_text(product)
+                answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{product['title']}**. {opts_summary}"
                 state.stage = 'awaiting_variant'
                 return (answer, state.filtered_products or all_products, None, False, None, False, None, False, None, None, None)
             q_mode, q_delta = _extract_quantity_delta(message)
@@ -1067,7 +1127,7 @@ def route_message(message: str, state: ConversationState, all_products: list, se
         state.selected_product = target_product
         state.stage = 'awaiting_variant_option'
         summary = _get_product_options_summary(target_product, state.selected_options, requested_option_name=req_opt)
-        return (summary, state.filtered_products or all_products, None, False, None, False, None, False, None, None, None)
+        return (summary, state.filtered_products or all_products, _build_precise_product_url({}, [target_product]), False, None, False, None, False, None, None, None)
     if state.stage in ('awaiting_variant', 'awaiting_variant_option', 'awaiting_confirm', 'awaiting_product_clarification') or state.stage.startswith('awaiting_'):
         if not state.selected_product and (state.filtered_products or all_products):
             pool = state.filtered_products or all_products
@@ -1123,11 +1183,39 @@ def route_message(message: str, state: ConversationState, all_products: list, se
                     state.stage = 'awaiting_variant_option'
                     summary = _get_product_options_summary(switched_p, state.selected_options)
                     state.filtered_products = [switched_p]
-                    return (summary, [switched_p], None, False, None, False, None, False, None, None, None)
+                    return (summary, [switched_p], _build_precise_product_url({}, [switched_p]), False, None, False, None, False, None, None, None)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # ── Browse escape ────────────────────────────────────────────────────────
+    # Without this, a selected product (e.g. a sold-out one) traps every later
+    # message in variant selection. A browse-style request that names no option
+    # of the current product drops the selection and falls through to search.
+    BROWSE_ESCAPE_SIGNALS = (
+        'show', 'other', 'another', 'different', 'available', 'what are',
+        'what do you have', 'find', 'search', 'list', 'browse', 'look for',
+        'looking for', 'do you have', 'alternative', 'similar',
+    )
+    if (
+        state.stage.startswith('awaiting_')
+        and state.selected_product
+        and not any(w in msg_lower for w in ('add', 'buy', 'cart', 'checkout', 'check out', 'basket', 'bag'))
+        and (
+            (any(sig in msg_lower for sig in BROWSE_ESCAPE_SIGNALS)
+             and not _extract_options_from_text(state.selected_product, msg_lower))
+            # Naming a different product always starts a new search, even if the
+            # message also contains an option valid for the current one ("black T-shirt").
+            or _mentions_other_product(message, state.selected_product, all_products)
+        )
+    ):
+        state.reset_selection()
+        state.stage = 'browse'
     # ────────────────────────────────────────────────────────────────────────
 
     if (state.stage in ('awaiting_variant', 'awaiting_variant_option', 'awaiting_confirm') or state.stage.startswith('awaiting_')) and state.selected_product:
         product = state.selected_product
+        if _is_product_sold_out(product):
+            answer, shown, sold_out_url = _handle_sold_out_product(product, state, all_products)
+            return (answer, shown, sold_out_url, False, None, False, None, False, None, None, None)
         opt_map = get_remaining_option_values(product, state.selected_options, shop_domain=shop_domain)
         if not opt_map:
             state.stage = 'awaiting_confirm'
@@ -1247,8 +1335,16 @@ def route_message(message: str, state: ConversationState, all_products: list, se
             _raw_type = (_ctp.get('productType') or _ctp.get('product_type') or '').strip()
             if _raw_type:
                 _catalog_type_map[_raw_type.lower()] = _raw_type
+        # Compare with spaces/hyphens removed and trailing plural 's' stripped so
+        # "black t-shirt" matches productType "T-Shirts" (and "shirts" vs "shirt").
+        _msg_squashed = ' '.join(
+            re.sub(r'[\s\-]', '', w).rstrip('s') for w in re.split(r'[^\w\-]+', msg_lower) if w
+        )
         for _type_lower, _type_canonical in _catalog_type_map.items():
-            if _type_lower in msg_lower:
+            _type_squashed = re.sub(r'[\s\-]', '', _type_lower).rstrip('s')
+            if _type_lower in msg_lower or (
+                _type_squashed and re.search(r'\b' + re.escape(_type_squashed) + r'\b', _msg_squashed)
+            ):
                 req_type = _type_canonical
                 break
         filters = {}
@@ -1282,12 +1378,38 @@ def route_message(message: str, state: ConversationState, all_products: list, se
         if filters:
             normalized = normalize_filters(filters, all_products)
             filtered = filter_products(all_products, filters)
+            if len(filtered) > 1:
+                # Only a type and/or option was recognised, so every product of that type or
+                # option matches. Narrow to products whose title shares the remaining words
+                # of the request ("active track pants" -> "active" -> Active Track Pants).
+                _opt_words = {w for v in _search_filter_opts.values() for w in re.split(r'\W+', str(v).lower())}
+                if req_type:
+                    _opt_words |= {w.rstrip('s') for w in re.split(r'\W+', req_type.lower()) if w} | set(re.split(r'\W+', req_type.lower()))
+                _ignore = _opt_words | {'looking', 'show', 'find', 'search', 'list', 'have', 'want', 'need', 'some', 'with', 'that', 'other', 'under', 'over', 'below', 'above', 'available', 'please', 'would', 'like', 'something', 'anything', 'items', 'item', 'products', 'product', 'things', 'stuff', 'clothes', 'clothing', 'colour', 'color', 'this', 'there', 'your', 'about', 'what', 'which', 'then'}
+                _req_words = {w for w in re.split(r'\W+', msg_lower) if len(w) >= 4 and w not in _ignore and w.rstrip('s') not in _ignore}
+                _scored = [
+                    (sum(1 for w in _req_words if w in re.split(r'\W+', p.get('title', '').lower())), p)
+                    for p in filtered
+                ]
+                _best = max((s for s, _ in _scored), default=0)
+                if _best > 0:
+                    filtered = [p for s, p in _scored if s == _best]
+                elif _req_words and not req_type:
+                    # Leftover words matched no product at all (likely a speech-recognition
+                    # miss like "fragments"). Don't dump every product of that color.
+                    state.stage = 'awaiting_product_clarification'
+                    heard = ' '.join(sorted(_req_words))
+                    answer = f"Sorry, I didn't understand \"{heard}\". Could you tell me which product you're looking for again?"
+                    return (answer, state.filtered_products or all_products, None, True, None, False, None, False, None, None, None)
             storefront_url = _build_precise_product_url(normalized, filtered)
             state.filtered_products = filtered
             state.previous_filters = filters
             if not filtered:
                 state.stage = 'browse'
                 answer = "I couldn't find any products matching your request. Try adjusting your filters."
+            elif len(filtered) == 1 and _is_product_sold_out(filtered[0]):
+                answer, shown, sold_out_url = _handle_sold_out_product(filtered[0], state, all_products)
+                return (answer, shown, sold_out_url, False, None, False, None, False, None, None, None)
             elif len(filtered) == 1:
                 p = filtered[0]
                 state.selected_product = p
@@ -1319,7 +1441,7 @@ def route_message(message: str, state: ConversationState, all_products: list, se
                 next_missing = missing_options[0] if missing_options else 'variant'
                 state.stage = f'awaiting_{next_missing.lower()}'
                 opts_summary = _available_variants_text(p)
-                answer = f"Found **{p['title']}**. Options: {opts_summary}. Which would you like?"
+                answer = opts_summary
             else:
                 state.stage = 'awaiting_variant'
                 answer = _format_product_search_summary(filtered)
@@ -1441,16 +1563,16 @@ def route_message(message: str, state: ConversationState, all_products: list, se
                 in_stock_vars = [v for v in vars_list if _is_variant_in_stock(v)]
                 variant = in_stock_vars[0] if in_stock_vars else vars_list[0] if vars_list else None
             if variant and (not _is_variant_in_stock(variant)):
-                opts_summary = _get_product_options_summary(matched_prod)
-                answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{matched_prod['title']}**. Available options: {opts_summary}."
+                opts_summary = re.sub(r'^Found \*\*.*?\*\*\.\s*', '', _get_product_options_summary(matched_prod))
+                answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{matched_prod['title']}**. {opts_summary}"
                 state.stage = 'awaiting_variant'
                 return (answer, state.filtered_products or all_products, None, False, None, False, None, False, None, None, None)
             if variant:
                 inv_qty = variant.get('inventoryQuantity')
                 if inv_qty is not None and isinstance(inv_qty, int) and (inv_qty >= 0) and (quantity > inv_qty):
                     if inv_qty == 0:
-                        opts_summary = _get_product_options_summary(matched_prod)
-                        answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{matched_prod['title']}**. Available options: {opts_summary}."
+                        opts_summary = re.sub(r'^Found \*\*.*?\*\*\.\s*', '', _get_product_options_summary(matched_prod))
+                        answer = f"Sorry, **{variant.get('title')}** is currently out of stock for **{matched_prod['title']}**. {opts_summary}"
                         state.stage = 'awaiting_variant'
                         return (answer, state.filtered_products or all_products, None, False, None, False, None, False, None, None, None)
                     else:

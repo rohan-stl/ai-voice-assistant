@@ -214,6 +214,23 @@ def merge_filters(new_filters: dict, previous_filters: dict | None) -> dict:
     return merged
 
 
+def _color_matches(requested: str, actual: str) -> bool:
+    """
+    Whole-word color match so "dark blue" matches "blue", but a size value like
+    "L" never matches "olive green" (plain substring checks let it through).
+    """
+    requested = (requested or "").strip().lower()
+    actual = (actual or "").strip().lower()
+    if not requested or not actual:
+        return False
+    if requested == actual:
+        return True
+    return bool(
+        re.search(r"\b" + re.escape(actual) + r"\b", requested)
+        or re.search(r"\b" + re.escape(requested) + r"\b", actual)
+    )
+
+
 def filter_products(products: list, filters: dict) -> list:
     if not isinstance(products, list):
         products = []
@@ -342,7 +359,7 @@ def filter_products(products: list, filters: dict) -> list:
                 opt_val  = opt.get("value", "")
                 # Color filter: check if any requested color matches this option's value
                 if colors_lower and not variant_color:
-                    if any(c in opt_val.lower() or opt_val.lower() in c for c in colors_lower):
+                    if any(_color_matches(c, opt_val) for c in colors_lower):
                         variant_color = opt_val
                 # Size filter: check if any requested size matches this option's value
                 if sizes_lower and not variant_size:
@@ -370,7 +387,7 @@ def filter_products(products: list, filters: dict) -> list:
 
             if colors_lower:
                 vc = variant_color.lower()
-                if not any(c in vc or vc in c for c in colors_lower):
+                if not any(_color_matches(c, vc) for c in colors_lower):
                     continue
 
             # -----------------------------------------
